@@ -1,0 +1,4 @@
+.env
+backend/temp_downloads
+backend/__pycache__
+
