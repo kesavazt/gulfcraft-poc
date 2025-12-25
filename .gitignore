@@ -1,4 +1,4 @@
 .env
 backend/temp_downloads
 backend/__pycache__
-fronted/package-lock.json
+frontend/package-lock.json
