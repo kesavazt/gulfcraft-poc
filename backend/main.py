@@ -1,6 +1,9 @@
 from langgraph.graph import StateGraph, END
 from state import AgentState
 from agents import supervisor_node, sharepoint_node, d365_node, email_node, search_node
+from database import init_db
+
+init_db()
 
 # --- Graph Construction ---
 workflow = StateGraph(AgentState)
