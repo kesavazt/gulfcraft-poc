@@ -1,8 +1,15 @@
 import random
 import json
+from sys import api_version
 from sqlalchemy.orm import Session
-from database import SessionLocal, Product, init_db, engine
+from database import SessionLocal, Product,QuotationLines,EstimationLines,Inventory, init_db, engine
 from sqlalchemy import text
+import openai
+import os
+import config
+
+
+client = openai.AzureOpenAI(api_key=config.OPENAI_API_KEY,api_version=config.OPENAI_API_VERSION,azure_endpoint=config.AZURE_OPENAI_ENDPOINT)
 
 # Categories and their specific items/vendors
 CATEGORIES = {
@@ -75,6 +82,20 @@ def update_vendor_emails():
         json.dump(vendor_data, f, indent=2)
     print("Updated vendor_emails.json")
 
+def batch_embed(texts, batch_size=100):
+    all_embeddings = []
+    #print(texts)
+    for i in range(0, len(texts), batch_size):
+        batch = texts[i:i + batch_size]
+        response = client.embeddings.create(
+            model="text-embedding-3-small",
+            input=batch
+        )
+
+        all_embeddings.extend([x.embedding for x in response.data])
+    print(all_embeddings)
+    return all_embeddings
+
 def main():
     print("Initializing Database...")
     init_db()
@@ -115,6 +136,70 @@ def main():
         session.commit()
         print("Successfully inserted 1000 products.")
         
+        # Clear existing ProjQuotationLines and ingest data again
+        print("Inserting Quotation Lines")
+        session.query(QuotationLines).delete()
+        session.commit()
+        quotations = json.load(open("ProjQuotationLines.json","r",encoding="utf-8"))
+        quotations = quotations["value"]
+        descriptions = []
+        for q in quotations:
+            text = q["AFZName"].strip().replace("\n","")
+            if len(text) != 0:
+                descriptions.append(text)
+            else:
+                descriptions.append("empty")
+        
+        print("Generating embeddings")
+        description_embeddings = batch_embed(descriptions)
+        print("Generated embeddings")
+        i = 0
+        for q in quotations:
+            obj = QuotationLines(
+                quotation_id = q["QuotationId"],
+                description = q["AFZName"],
+                sales_price = q["SalesPrice"],
+                line_num = q["LineNum"],
+                afz_boat_model_id = q["AFZBoatModelId"],
+                embedding = description_embeddings[i]
+            )
+            session.add(obj)
+            i += 1
+        session.commit()
+
+        # Clear existing EstimationLines and ingest data again
+        print("Inserting EstimationLines")
+        estimations = json.load(open("EstimationLines.json","r",encoding="utf-8"))
+        estimations = estimations["value"]
+        for e in estimations:
+            obj = EstimationLines(
+                quotation_id = e["QuotationId"],
+                line_num = e["LineNum"],
+                item_type = e["ItemType"],
+                item_name = e["ItemName"],
+                std_item_code = e["StdItemCode"],
+                uom = e["UOM"],
+                item_qty = e["ItemQty"],
+                average_price = e["AveragePrice"],
+                last_purchase_price = e["LastPurchPrice"],
+                sales_price = e["SalesPrice"]
+            )
+            session.add(obj)
+        session.commit()
+        
+        # Clear Existing Inventory and ingest data again
+        print("Inserting Inventory")
+        
+        inventory = json.load(open("Products.json","r"))
+        inventory = inventory["value"]
+        for i in inventory:
+            obj = Inventory(
+                item_number = i["ProductNumber"],
+                unit_cost = 50,
+                vendor_email = "vinod.ihava@gulfcraftinc.com"
+            )
+            session.add(obj)
+        session.commit()
     except Exception as e:
         import traceback
         traceback.print_exc()

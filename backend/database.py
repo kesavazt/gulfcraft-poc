@@ -26,18 +26,37 @@ class Product(Base):
     embedding = Column(Vector(1536))  # OpenAI embedding size
     last_updated = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
+# Create tables to ingest real data
+class Inventory(Base):
+    __tablename__ = "inventory"
+    id = Column(Integer,autoincrement=True,primary_key=True)
+    item_number = Column(String)
+    unit_cost = Column(Integer)
+    vendor_email = Column(String)
+
 class QuotationLines(Base):
     __tablename__ = "quotation_lines"
     id = Column(Integer,primary_key=True,index=True,autoincrement=True) # quotationId can't be used as primary key
     quotation_id = Column(String)
+    line_num = Column(Integer)
     description = Column(String)
-    cost = Column(Integer)
+    sales_price = Column(Integer)
+    afz_boat_model_id = Column(String)
+    embedding = Column(Vector(1536))
 
 class EstimationLines(Base):
     __tablename__ = "estimation_lines"
     id = Column(Integer,primary_key=True,autoincrement=True)
     quotation_id = Column(String) # can't make this the foreign key either
-    cost = Column(Integer)
+    line_num = Column(Integer)
+    item_type = Column(String) # must use item_type = "Item"
+    item_name = Column(String)
+    std_item_code = Column(String)
+    uom = Column(String)
+    item_qty = Column(Integer)
+    average_price = Column(Integer)
+    last_purchase_price = Column(Integer)
+    sales_price = Column(Integer)
 
 class Conversation(Base):
     __tablename__ = "conversations"
@@ -75,19 +94,4 @@ engine = create_engine(config.DATABASE_URL, connect_args={"check_same_thread": F
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 def init_db():
-    Base.metadata.create_all(bind=engine)
-    # add json data
-    quotations = json.load(open("backend/ProjQuotationLines.json","r",encoding="utf-8"))
-    quotations = quotations["value"]
-    session = SessionLocal()
-    for q in quotations:
-        obj = QuotationLines(quotation_id=q["QuotationId"],description=q["LineDescription"],cost=q["LineAmount"])
-        session.add(obj)
-    session.commit()
-    estimations = json.load(open("backend/EstimationLines.json","r",encoding="utf-8"))
-    estimations = estimations["value"]
-    for e in estimations:
-        obj = EstimationLines(quotation_id=e["QuotationId"],cost=e["CostPrice"])
-        session.add(obj)
-    session.commit()
-        
+    Base.metadata.create_all(bind=engine)     
