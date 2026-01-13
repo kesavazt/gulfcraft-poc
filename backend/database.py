@@ -4,6 +4,7 @@ from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, relationship
 from sqlalchemy.sql import func
 from pgvector.sqlalchemy import Vector
+from sqlalchemy.dialects.postgresql import TSVECTOR
 import config
 import json
 Base = declarative_base()
@@ -25,6 +26,12 @@ class Product(Base):
     category = Column(String)
     embedding = Column(Vector(1536))  # OpenAI embedding size
     last_updated = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    # Add tsv column to support hybrid search
+    tsv = Column(
+        TSVECTOR,
+        nullable=False,
+        server_default=func.to_tsvector("english", description)
+    )
 
 # Create tables to ingest real data
 class Inventory(Base):

@@ -3,7 +3,7 @@ import json
 from sys import api_version
 from sqlalchemy.orm import Session
 from database import SessionLocal, Product,QuotationLines,EstimationLines,Inventory, init_db, engine
-from sqlalchemy import text
+import sqlalchemy
 import openai
 import os
 import config
@@ -105,15 +105,20 @@ def main():
     # We'll try to execute an ALTER TABLE, ignoring error if it exists.
     with engine.connect() as conn:
         try:
-            conn.execute(text("ALTER TABLE products ADD COLUMN category VARCHAR"))
+            conn.execute(sqlalchemy.text("ALTER TABLE products ADD COLUMN category VARCHAR"))
             print("Added category column.")
         except Exception as e:
             print(f"Column might already exist: {e}")
+    
+    with engine.connect() as conn:
+        conn.execute(sqlalchemy.text("ALTER TABLE products ADD COLUMN tsv tsvector GENERATED ALWAYS AS (to_tsvector('english', description)) STORED;"))
 
+ 
     print("Generating 1000 products...")
     data = generate_products(1000)
     
     session = SessionLocal()
+
     try:
         # Clear existing products to avoid duplicates
         print("Clearing existing products...")

@@ -3,8 +3,7 @@ from sqlalchemy.orm import Session
 from database import SessionLocal, Product
 from langchain_openai import OpenAIEmbeddings, AzureOpenAIEmbeddings
 import config
-from sqlalchemy import text
-
+from sqlalchemy import text,func,desc
 # Initialize Embeddings
 if config.OPENAI_API_TYPE == "azure":
     embeddings = AzureOpenAIEmbeddings(
@@ -36,17 +35,47 @@ def hybrid_search(query: str, top_k: int = config.TOP_K_ITEMS) -> List[Dict[str,
             results = session.query(Product).filter(Product.name.ilike(f"%{query}%")).limit(top_k).all()
         else:
             # Postgres Vector Search
-            results = session.query(Product).order_by(
-                Product.embedding.cosine_distance(query_vec)
-            ).limit(top_k).all()
-            
+            #results = session.query(Product).order_by(
+            #    Product.embedding.cosine_distance(query_vec)
+            #).limit(top_k).all()
+            # Full Hybrid Search
+            semantic = (
+                session.query(
+                    Product.id,
+                    (1 - Product.embedding.cosine_distance(query_vec)).label("semantic_score")
+                )
+            .order_by(Product.embedding.cosine_distance(query_vec))
+            .limit(50)
+            .subquery()
+            )
+
+            results = (
+                session.query(
+                Product,
+                (
+                    0.7 * semantic.c.semantic_score +
+                    0.3 * func.coalesce(
+                        func.ts_rank(
+                            Product.tsv,
+                            func.plainto_tsquery("english", query)
+                        ),
+                        0
+                    )
+                ).label("score")
+            )
+            .join(semantic, Product.id == semantic.c.id)
+            .order_by(desc("score"))
+            .limit(top_k)
+            .all()
+            )
+
         return [
             {
-                "id": p.id,
-                "d365_id": p.d365_id,
-                "name": p.name,
-                "description": p.description,
-                "price": p.price
+                "id": p[0].id,
+                "d365_id": p[0].d365_id,
+                "name": p[0].name,
+                "description": p[0].description,
+                "price": p[0].price
             }
             for p in results
         ]

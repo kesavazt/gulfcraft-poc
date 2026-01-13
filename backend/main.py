@@ -42,8 +42,13 @@ app = workflow.compile()
 if __name__ == "__main__":
     # Test Run
     from langchain_core.messages import HumanMessage
+    #inputs = {
+    #    "messages": [HumanMessage(content="Create a job for Marine Plywood and check the price")],
+    #    "user_id": 1,
+    #    "threshold": 1000.0
+    #}
     inputs = {
-        "messages": [HumanMessage(content="Create a job for Marine Plywood and check the price")],
+        "messages": [HumanMessage(content="Find me an item with the following description:\n'High quality fog horn for marine use. Specification 3.'")],
         "user_id": 1,
         "threshold": 1000.0
     }
