@@ -5,6 +5,7 @@ from sqlalchemy.orm import sessionmaker, relationship
 from sqlalchemy.sql import func
 from pgvector.sqlalchemy import Vector
 from sqlalchemy.dialects.postgresql import TSVECTOR
+from sqlalchemy import Computed
 import config
 import json
 Base = declarative_base()
@@ -16,7 +17,7 @@ class User(Base):
     hashed_password = Column(String)
     role = Column(String, default="user")  # 'admin' or 'user'
 
-class Product(Base):
+'''class Product(Base):
     __tablename__ = "products"
     id = Column(Integer, primary_key=True, index=True)
     d365_id = Column(String, unique=True, index=True)
@@ -31,11 +32,11 @@ class Product(Base):
         TSVECTOR,
         nullable=False,
         server_default=func.to_tsvector("english", description)
-    )
+    )'''
 
 # Create tables to ingest real data
-class Inventory(Base):
-    __tablename__ = "inventory"
+class Product(Base):
+    __tablename__ = "products"
     id = Column(Integer,autoincrement=True,primary_key=True)
     item_number = Column(String)
     unit_cost = Column(Integer)
@@ -50,6 +51,13 @@ class QuotationLines(Base):
     sales_price = Column(Integer)
     afz_boat_model_id = Column(String)
     embedding = Column(Vector(1536))
+    tsv = Column(
+    TSVECTOR,
+    Computed(
+        "to_tsvector('english', description)",
+        persisted=True
+    )
+    )
 
 class EstimationLines(Base):
     __tablename__ = "estimation_lines"

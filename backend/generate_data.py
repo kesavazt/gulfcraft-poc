@@ -2,7 +2,7 @@ import random
 import json
 from sys import api_version
 from sqlalchemy.orm import Session
-from database import SessionLocal, Product,QuotationLines,EstimationLines,Inventory, init_db, engine
+from database import SessionLocal, Product,QuotationLines,EstimationLines, init_db, engine
 import sqlalchemy
 import openai
 import os
@@ -93,7 +93,6 @@ def batch_embed(texts, batch_size=100):
         )
 
         all_embeddings.extend([x.embedding for x in response.data])
-    print(all_embeddings)
     return all_embeddings
 
 def main():
@@ -103,25 +102,22 @@ def main():
     # Add column if not exists (Hack for SQLite/Dev)
     # SQLAlchemy init_db won't update existing tables.
     # We'll try to execute an ALTER TABLE, ignoring error if it exists.
-    with engine.connect() as conn:
+    '''with engine.connect() as conn:
         try:
             conn.execute(sqlalchemy.text("ALTER TABLE products ADD COLUMN category VARCHAR"))
             print("Added category column.")
         except Exception as e:
-            print(f"Column might already exist: {e}")
+            print(f"Column might already exist: {e}")'''
     
-    with engine.connect() as conn:
-        conn.execute(sqlalchemy.text("ALTER TABLE products ADD COLUMN tsv tsvector GENERATED ALWAYS AS (to_tsvector('english', description)) STORED;"))
-
  
-    print("Generating 1000 products...")
-    data = generate_products(1000)
+    #print("Generating 1000 products...")
+    #data = generate_products(1000)
     
     session = SessionLocal()
 
     try:
         # Clear existing products to avoid duplicates
-        print("Clearing existing products...")
+        '''print("Clearing existing products...")
         session.query(Product).delete()
         session.commit()
         
@@ -140,7 +136,7 @@ def main():
         
         session.commit()
         print("Successfully inserted 1000 products.")
-        
+        '''
         # Clear existing ProjQuotationLines and ingest data again
         print("Inserting Quotation Lines")
         session.query(QuotationLines).delete()
@@ -198,12 +194,15 @@ def main():
         inventory = json.load(open("Products.json","r"))
         inventory = inventory["value"]
         for i in inventory:
-            obj = Inventory(
+            obj = Product(
                 item_number = i["ProductNumber"],
                 unit_cost = 50,
                 vendor_email = "vinod.ihava@gulfcraftinc.com"
             )
             session.add(obj)
+
+        with engine.connect() as conn:
+            conn.execute(sqlalchemy.text("ALTER TABLE quotation_lines ADD COLUMN tsv tsvector GENERATED ALWAYS AS (to_tsvector('english', description)) STORED;"))
         session.commit()
     except Exception as e:
         import traceback
