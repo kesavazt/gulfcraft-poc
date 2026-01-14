@@ -74,21 +74,6 @@ def generate_costing_sheet(job_id: str, details: str, price: float) -> str:
         print(f"Excel Generation Error: {e}")
         return ""
 
-# --- D365 Tools ---
-
-def get_d365_price(item_id: str) -> float:
-    """Fetches price from D365 (Mock)."""
-    # In reality, this would call D365 API
-    # For now, return a random price or lookup from our synced DB
-    session = SessionLocal()
-    try:
-        product = session.query(Product).filter(Product.d365_id == item_id).first()
-        if product:
-            return product.price
-    finally:
-        session.close()
-        
-    return round(random.uniform(50, 5000), 2)
 
 # --- Email Tools ---
 

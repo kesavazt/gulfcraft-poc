@@ -31,7 +31,6 @@ system_prompt = (
     "\n2. If the user is looking for an item, route to 'SearchAgent'."
     "\n3. If the user wants to create a job or send emails, route to 'EmailAgent'."
     "\n4. If the user wants to download/upload sheets, route to 'SharePointAgent'."
-    "\n5. If the user wants to check prices in D365, route to 'D365Agent'."
 )
 options = ["FINISH"] + members
 function_def = {
@@ -108,13 +107,5 @@ sharepoint_agent = create_react_agent(llm, tools=sharepoint_tools)
 
 def sharepoint_node(state: AgentState):
     result = sharepoint_agent.invoke(state)
-    return {"messages": result["messages"]}
-
-# --- D365 Agent ---
-d365_tools = [tools.get_d365_price]
-d365_agent = create_react_agent(llm, tools=d365_tools)
-
-def d365_node(state: AgentState):
-    result = d365_agent.invoke(state)
     return {"messages": result["messages"]}
 
