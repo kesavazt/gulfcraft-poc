@@ -1,4 +1,5 @@
 .env
 backend/temp_downloads
 backend/__pycache__
+backend/venv
 frontend/package-lock.json

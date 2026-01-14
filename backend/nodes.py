@@ -5,6 +5,7 @@ import config
 import templates
 from langchain_core.messages import AIMessage
 
+
 def search_node(state: AgentState) -> Dict[str, Any]:
     """Node to search for similar items based on user inquiry."""
     last_message = state["messages"][-1].content

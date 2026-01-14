@@ -9,7 +9,7 @@ import templates
 from search import hybrid_search
 from database import SessionLocal, CostingRequest, Product
 from openpyxl import load_workbook
-
+from langchain.tools import tool
 # --- SharePoint Tools ---
 
 def create_sharepoint_job(details: str, user_id: int) -> str:
@@ -94,9 +94,12 @@ def read_email_quotation(job_id: str) -> Optional[float]:
 
 # --- Search Tool ---
 
-def search_similar_items(query: str) -> List[Dict[str, Any]]:
-    """Searches for similar items using hybrid search."""
-    return hybrid_search(query, top_k=config.TOP_K_ITEMS)
+def search_similar_quotations(job_description: str, boat_model: str) -> List[Dict[str, Any]]:
+    """Searches for similar quotations in the DB"""
+    print("Searching for similar quotations")
+    print(job_description)
+    print(boat_model)
+    return hybrid_search(job_description, boat_model, top_k=config.TOP_K_ITEMS)
 
 # --- Vendor Tools ---
 

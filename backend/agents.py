@@ -18,7 +18,7 @@ llm = AzureChatOpenAI(azure_deployment=config.AZURE_OPENAI_CHAT_DEPLOYMENT_NAME,
                         azure_endpoint=config.AZURE_OPENAI_ENDPOINT)
 
 # --- Supervisor ---
-members = ["SharePointAgent", "D365Agent", "EmailAgent", "SearchAgent"]
+members = ["SearchAgent"]
 system_prompt = (
     "You are a supervisor tasked with managing a conversation between the"
     " following workers: {members}. Given the following user request,"
@@ -27,11 +27,10 @@ system_prompt = (
     " respond with FINISH."
     "\n\n"
     "Logic:"
-    "\n1. If the user input is casual (e.g., 'hello', 'how are you'), route to 'SearchAgent' to handle it politely."
-    "\n2. If the user is looking for an item, route to 'SearchAgent'."
-    "\n3. If the user wants to create a job or send emails, route to 'EmailAgent'."
-    "\n4. If the user wants to download/upload sheets, route to 'SharePointAgent'."
+    "\n1. If the user input is casual (e.g., 'hello', 'how are you'), greet the user back and respond with FINISH"
+    "\n2. If the user wants to create a job or is requesting a quotation, route to 'SearchAgent'. Only route if the information is complete. The user query must have a description and boat model(e.g MAJESTY62 etc)"
 )
+
 options = ["FINISH"] + members
 function_def = {
     "name": "route",
@@ -74,15 +73,53 @@ def supervisor_node(state: AgentState):
 # --- Search Agent ---
 # Explanation: A ReAct agent uses the LLM to 'Reason' about the user input and 'Act' by calling tools.
 # It loops (Reason -> Act -> Observe) until it has a final answer.
-search_agent = create_react_agent(llm, tools=[tools.search_similar_items])
+#search_agent = create_react_agent(llm, tools=[tools.search_similar_quotations])
+
+
 
 def search_node(state: AgentState):
+    user_query = state["messages"][-1].content # Classified by the Supervisor so it's safe hopefully
+
     # We invoke the agent with the current state. It returns a dictionary with "messages".
-    result = search_agent.invoke(state)
+    new_state =  [
+        ("system",
+f"""
+The user has asked the following query: {user_query} 
+
+The user wants a job done. He has provided a description and boat model. Extract the description and boat model and
+use the search_similar_quotations tool to get a list of similar quotations. When extracting description, don't miss important keywords like fitting,
+ leaking, plumbing etc from the description if there are any.
+"""),
+    ]
+    llm_with_tools = llm.bind_tools([tools.search_similar_quotations])
+    result = llm_with_tools.invoke(new_state)
+    
     # We return the update to the state. 
     # Note: create_react_agent automatically handles appending messages to the state history.
-    return {"messages": result["messages"]}
+    return {"messages": [result]}#result.content["messages"]}
+    
+def refinement_node(state: AgentState):
+    fetched_quotations = state["messages"][-1].content
+    print(state["messages"][-1].content)
+    #exit()
+    new_state =  [
+        ("system",
+f'''
+Following is a list of quotations:
+{fetched_quotations}
+Present each of these to the user. Mention all attributes of each quotation. Don't skip anything 
+Use bulleted list, don't use numbers when presenting.
+Ask the user to select one of these quotations by entering the selected quotation's id.
+'''
+    )
+    ]
+    result = llm.invoke(new_state)
+    
+    return {"messages": [result]}
 
+def costing_sheet_node(state: AgentState):
+    selected_quotation = state["selected_quotation"]
+    return {"messages": state.messages}
 # --- Email Agent ---
 email_tools = [
     tools.get_vendor_emails,

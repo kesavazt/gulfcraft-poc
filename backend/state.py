@@ -5,8 +5,8 @@ class AgentState(TypedDict):
     messages: List[BaseMessage]
     next: str
     user_id: int
-    similar_items: List[Dict[str, Any]]
-    selected_item: Optional[Dict[str, Any]]
+    similar_quotations: List[Dict[str, Any]]
+    selected_quotation: Optional[Dict[str, Any]]
     job_id: Optional[str]
     price: Optional[float]
     threshold: float
