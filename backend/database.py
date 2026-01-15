@@ -97,12 +97,50 @@ class CostingRequest(Base):
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id"))
     job_id = Column(String, unique=True, index=True)
-    status = Column(String, default="Pending")  # Pending, Quotation Requested, Completed
+    quotation_id = Column(String, nullable=True)  # Selected quotation ID
+    line_num = Column(Integer, nullable=True)  # Selected line number
+    status = Column(String, default="Pending")  # Pending, Awaiting Quotes, Completed
     item_details = Column(Text)
     price = Column(Float, nullable=True)
+    sharepoint_url = Column(String, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
     user = relationship("User")
+    line_items = relationship("CostingLineItem", back_populates="costing_request")
+
+
+class CostingLineItem(Base):
+    """Individual line items in a costing job with their pricing status."""
+    __tablename__ = "costing_line_items"
+    id = Column(Integer, primary_key=True, index=True)
+    costing_request_id = Column(Integer, ForeignKey("costing_requests.id"))
+    item_name = Column(String)
+    item_code = Column(String, nullable=True)
+    quantity = Column(Integer, default=1)
+    unit_price = Column(Float, nullable=True)
+    price_status = Column(String, default="pending")  # resolved, pending_quote
+    vendor_email = Column(String, nullable=True)
+    quote_requested_at = Column(DateTime(timezone=True), nullable=True)
+    quote_received_at = Column(DateTime(timezone=True), nullable=True)
+
+    costing_request = relationship("CostingRequest", back_populates="line_items")
+
+
+class PendingQuoteRequest(Base):
+    """Tracks pending email quote requests for items > threshold."""
+    __tablename__ = "pending_quote_requests"
+    id = Column(Integer, primary_key=True, index=True)
+    costing_request_id = Column(Integer, ForeignKey("costing_requests.id"))
+    costing_line_item_id = Column(Integer, ForeignKey("costing_line_items.id"))
+    job_id = Column(String, index=True)  # For easy lookup by job_id in email subject
+    item_name = Column(String)
+    vendor_email = Column(String)
+    email_sent_at = Column(DateTime(timezone=True), server_default=func.now())
+    email_subject = Column(String)
+    status = Column(String, default="pending")  # pending, received, timeout
+    received_price = Column(Float, nullable=True)
+    received_at = Column(DateTime(timezone=True), nullable=True)
 
 # Setup Database Connection
 engine = create_engine(config.DATABASE_URL, connect_args={"check_same_thread": False} if "sqlite" in config.DATABASE_URL else {})

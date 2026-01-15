@@ -18,11 +18,18 @@ D365_TENANT_ID = os.getenv("D365_TENANT_ID", "mock_tenant_id")
 D365_CLIENT_ID = os.getenv("D365_CLIENT_ID", "mock_d365_client_id")
 D365_CLIENT_SECRET = os.getenv("D365_CLIENT_SECRET", "mock_d365_client_secret")
 
-# --- Email Config (Mock) ---
+# --- Email Config ---
+# Legacy SMTP config (kept for reference)
 SMTP_SERVER = os.getenv("SMTP_SERVER", "smtp.office365.com")
 SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
 SMTP_USERNAME = os.getenv("SMTP_USERNAME", "costing-bot@gulfcraft.com")
 SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "mock_password")
+
+# Microsoft Graph API OAuth2 Config
+MS_GRAPH_TENANT_ID = os.getenv("MS_GRAPH_TENANT_ID", os.getenv("D365_TENANT_ID", ""))
+MS_GRAPH_CLIENT_ID = os.getenv("MS_GRAPH_CLIENT_ID", "")
+MS_GRAPH_CLIENT_SECRET = os.getenv("MS_GRAPH_CLIENT_SECRET", "")
+MS_GRAPH_SENDER_EMAIL = os.getenv("MS_GRAPH_SENDER_EMAIL", SMTP_USERNAME)
 
 # --- Database Config ---
 # Default to local SQLite for dev, Postgres for prod
@@ -51,7 +58,8 @@ LANGFUSE_PUBLIC_KEY = os.getenv("LANGFUSE_PUBLIC_KEY")
 LANGFUSE_SECRET_KEY = os.getenv("LANGFUSE_SECRET_KEY")
 LANGFUSE_HOST = os.getenv("LANGFUSE_HOST", "https://cloud.langfuse.com")
 
-# --- Langfuse ---
-LANGFUSE_PUBLIC_KEY = os.getenv("LANGFUSE_PUBLIC_KEY")
-LANGFUSE_SECRET_KEY = os.getenv("LANGFUSE_SECRET_KEY")
-LANGFUSE_HOST = os.getenv("LANGFUSE_HOST", "https://cloud.langfuse.com")
+# --- Mistral OCR ---
+MISTRAL_API_KEY = os.getenv("MISTRAL_API_KEY")
+
+# --- Email Monitor ---
+EMAIL_POLL_INTERVAL = int(os.getenv("EMAIL_POLL_INTERVAL", "60"))

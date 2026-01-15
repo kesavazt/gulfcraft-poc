@@ -75,11 +75,13 @@ def hybrid_search(query: str,boat_model: str, top_k: int = config.TOP_K_ITEMS) -
         # Returns QuotationID
         return [
             {
-                "id": p[0].id,
+                "id": p[0].quotation_id,
                 #"d365_id": p[0].d365_id,
                 #"name": p[0].name,
                 "description": p[0].description,
-                "boat_model": p[0].afz_boat_model_id
+                "boat_model": p[0].afz_boat_model_id,
+                "price": p[0].sales_price,
+                "line_num": p[0].line_num
                 #"price": p[0].price
             }
             for p in results

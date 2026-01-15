@@ -1,73 +1,207 @@
 from langgraph.graph import StateGraph, END
 from langgraph.prebuilt import ToolNode
 from state import AgentState
-from agents import supervisor_node, sharepoint_node, email_node, search_node,refinement_node,costing_sheet_node
+from agents import (
+    supervisor_node, search_node, refinement_node,
+    selection_node, costing_node
+)
 from tools import search_similar_quotations
 from database import init_db
 
 # --- Graph Construction ---
 workflow = StateGraph(AgentState)
 tool_node = ToolNode([search_similar_quotations])
+
 # Add Nodes
 workflow.add_node("Supervisor", supervisor_node)
-workflow.add_node("SearchAgent", search_node) # searches for quotation_lines
-workflow.add_node('Tools',tool_node)
-workflow.add_node("RefinementAgent",refinement_node) 
-workflow.add_node("CostingSheetAgent",costing_sheet_node) # handles sending emails, creating costing sheet and uploading to sharepoint
+workflow.add_node("SearchAgent", search_node)
+workflow.add_node("Tools", tool_node)
+workflow.add_node("RefinementAgent", refinement_node)
+workflow.add_node("SelectionAgent", selection_node)
+workflow.add_node("CostingAgent", costing_node)
 
-
-
-# Add Edges
-# Start with Supervisor
+# Set entry point
 workflow.set_entry_point("Supervisor")
 
-# Supervisor decides next
+# Supervisor routing
 workflow.add_conditional_edges(
     "Supervisor",
     lambda x: x["next"],
     {
         "SearchAgent": "SearchAgent",
-        "Supervisor": "Supervisor",
+        "SelectionAgent": "SelectionAgent",
+        "CostingAgent": "CostingAgent",
         "FINISH": END
     }
 )
 
-# Agents return to Supervisor
-workflow.add_edge("CostingSheetAgent", "Supervisor")
-workflow.add_edge("SearchAgent","Tools")
-workflow.add_edge("Tools","RefinementAgent")
-workflow.add_edge("RefinementAgent",END)#"CostingSheetAgent")
-workflow.add_edge("CostingSheetAgent",END)
-# Compile
+# Search flow: SearchAgent -> Tools -> RefinementAgent -> END (wait for user)
+workflow.add_edge("SearchAgent", "Tools")
+workflow.add_edge("Tools", "RefinementAgent")
+workflow.add_edge("RefinementAgent", END)
+
+# Selection flow: SelectionAgent -> CostingAgent or back to waiting
+def selection_router(state):
+    """Route based on whether a quotation was selected."""
+    next_node = state.get("next")
+    if next_node == "CostingAgent":
+        return "CostingAgent"
+    return "__end__"
+
+workflow.add_conditional_edges(
+    "SelectionAgent",
+    selection_router,
+    {
+        "CostingAgent": "CostingAgent",
+        "__end__": END
+    }
+)
+
+# Costing flow: CostingAgent -> END
+workflow.add_edge("CostingAgent", END)
+
+# Compile the workflow
 app = workflow.compile()
 
-if __name__ == "__main__":
-    # Test Run
-    from langchain_core.messages import HumanMessage
+
+def invoke_agent(message: str, user_id: int = 1, threshold: float = 1000.0, conversation_history: list = None):
+    """
+    Invoke the agent with a single message.
+    Used by API endpoints for stateless invocations.
+
+    Args:
+        message: User's message
+        user_id: User ID for the session
+        threshold: Price threshold for items requiring quotes
+        conversation_history: Optional list of previous messages for context
+
+    Returns:
+        dict with 'response' (str) and 'state' (dict) for maintaining conversation
+    """
+    from langchain_core.messages import HumanMessage, AIMessage
+
+    messages = []
+    if conversation_history:
+        for msg in conversation_history:
+            if msg.get("role") == "user":
+                messages.append(HumanMessage(content=msg["content"]))
+            elif msg.get("role") == "assistant":
+                messages.append(AIMessage(content=msg["content"]))
+
+    messages.append(HumanMessage(content=message))
+
     inputs = {
-        "messages": [HumanMessage(content="Give me a quotation for boat polishing. My boat model is MAJESTY62")],
-        "user_id": 1,
-        "threshold": 1000.0
+        "messages": messages,
+        "user_id": user_id,
+        "threshold": threshold
     }
-    # Workflow :
-    # 1) Give a list of quotation_lines that are relevant to this
-    # 2) The user selects one of these or asks for more
-    # 3) Create a costing sheet and add all the items having prices less 1000 dirhams (for the remaining it sends an email to vinod)
-    # 4) Listen for the incoming emails and look for price quotations (Mistral OCR model to extract price items) and update the costing sheet
-    # 5) Upload the costing sheet to sharepoint and ask the user to check
-    '''inputs = {
-        "messages": [HumanMessage(content="Find me an item with the following description:\n'High quality fog horn for marine use. Specification 3.'")],
-        "user_id": 1,
-        "threshold": 1000.0
-    }'''
+
+    response_messages = []
+    final_state = {}
+
     for output in app.stream(inputs):
-        for key, value in output.items():
-            print(f"--- {key} ---")
+        for _, value in output.items():
+            final_state.update(value)
             if 'messages' in value:
                 for msg in value["messages"]:
-                    if isinstance(msg,list):
-                        print(msg)
-                    else:
-                        print(msg.content)
+                    if hasattr(msg, 'content') and msg.content:
+                        response_messages.append(msg.content)
+
+    return {
+        "response": "\n".join(response_messages),
+        "state": {
+            "awaiting_selection": final_state.get("awaiting_selection", False),
+            "job_id": final_state.get("job_id"),
+            "emails_sent": final_state.get("emails_sent", False),
+            "awaiting_quotes": final_state.get("awaiting_quotes", False),
+            "generated_file": final_state.get("generated_file"),
+            "sharepoint_url": final_state.get("sharepoint_url")
+        }
+    }
+
+
+def run_interactive():
+    """
+    Run the agent in interactive terminal mode.
+    Supports multi-turn conversations with user input.
+    """
+    from langchain_core.messages import HumanMessage, AIMessage
+
+    print("=" * 60)
+    print("Gulf Craft Costing Agent - Interactive Mode")
+    print("=" * 60)
+    print("Type 'quit' or 'exit' to end the conversation.")
+    print("Type 'reset' to start a new conversation.")
+    print("-" * 60)
+
+    conversation_history = []
+    user_id = 1
+    threshold = 1000.0
+
+    while True:
+        try:
+            user_input = input("\nYou: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print("\nGoodbye!")
+            break
+
+        if not user_input:
+            continue
+
+        if user_input.lower() in ['quit', 'exit']:
+            print("Goodbye!")
+            break
+
+        if user_input.lower() == 'reset':
+            conversation_history = []
+            print("\n[Conversation reset. Starting fresh.]\n")
+            continue
+
+        # Build messages list with history
+        messages = []
+        for msg in conversation_history:
+            if msg["role"] == "user":
+                messages.append(HumanMessage(content=msg["content"]))
             else:
-                print(value)
+                messages.append(AIMessage(content=msg["content"]))
+
+        messages.append(HumanMessage(content=user_input))
+
+        inputs = {
+            "messages": messages,
+            "user_id": user_id,
+            "threshold": threshold
+        }
+
+        print("\nAgent: ", end="", flush=True)
+
+        response_parts = []
+        for output in app.stream(inputs):
+            for _, value in output.items():
+                if 'messages' in value:
+                    for msg in value["messages"]:
+                        if hasattr(msg, 'content') and msg.content:
+                            print(msg.content)
+                            response_parts.append(msg.content)
+
+        # Add to conversation history
+        conversation_history.append({"role": "user", "content": user_input})
+        if response_parts:
+            conversation_history.append({"role": "assistant", "content": "\n".join(response_parts)})
+
+
+if __name__ == "__main__":
+    import sys
+
+    if len(sys.argv) > 1 and sys.argv[1] == "--test":
+        # Single test run (non-interactive)
+        test_message = " ".join(sys.argv[2:]) if len(sys.argv) > 2 else "I need a quotation for boat polishing work. My boat model is MAJESTY62"
+
+        print(f"Test message: {test_message}\n")
+        result = invoke_agent(test_message)
+        print(f"Response:\n{result['response']}")
+        print(f"\nState: {result['state']}")
+    else:
+        # Interactive mode
+        # Give me a quotation for polishing work. My boat model is MAJESTY62
+        run_interactive()

@@ -9,10 +9,7 @@ from jose import JWTError, jwt
 import bcrypt
 import config
 from database import SessionLocal, User, Conversation, Message, CostingRequest, init_db
-from main import app as agent_app
-from langchain_core.messages import HumanMessage, AIMessage
-from langfuse.langchain import CallbackHandler
-from langfuse import get_client
+from main import invoke_agent
 
 app = FastAPI()
 
@@ -25,8 +22,6 @@ app.add_middleware(
 )
 # --- Auth Setup ---
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
-
-langfuse = get_client()
 
 def hash_password(password):
     pwd_bytes = password.encode('utf-8')
@@ -86,6 +81,7 @@ class ChatRequest(BaseModel):
 class ChatResponse(BaseModel):
     response: str
     conversation_id: int
+    state: Optional[dict] = None
 
 class RequestStatus(BaseModel):
     job_id: str
@@ -141,33 +137,36 @@ def chat(request: ChatRequest, current_user: User = Depends(get_current_user), d
     db.add(user_msg)
     db.commit()
 
-    # Invoke Agent
-    # We need to reconstruct history from DB or pass just the new message
-    # For simplicity, we'll pass the new message and let the graph handle state (stateless graph for now)
-    # Ideally, we'd load history from DB and pass it to the agent
-    
-    inputs = {
-        "messages": [HumanMessage(content=request.message)],
-        "user_id": current_user.id,
-        "threshold": config.PRICE_THRESHOLD
-    }
-    
-    # Initialize Langfuse Handler
-    langfuse_handler = CallbackHandler()
-    
-    # Run Agent
-    final_response = ""
-    for output in agent_app.stream(inputs, config={"callbacks": [langfuse_handler]}):
-        for key, value in output.items():
-            if "messages" in value:
-                final_response = value["messages"][0].content
-    
+    # Load conversation history from DB
+    conversation_history = []
+    messages = db.query(Message).filter(
+        Message.conversation_id == conversation.id
+    ).order_by(Message.id).all()
+
+    for msg in messages[:-1]:  # Exclude the message we just added
+        conversation_history.append({
+            "role": "user" if msg.sender == "user" else "assistant",
+            "content": msg.content
+        })
+
+    # Invoke Agent with conversation history
+    result = invoke_agent(
+        message=request.message,
+        user_id=current_user.id,
+        threshold=config.PRICE_THRESHOLD,
+        conversation_history=conversation_history
+    )
+
     # Save AI Message
-    ai_msg = Message(conversation_id=conversation.id, content=final_response, sender="ai")
+    ai_msg = Message(conversation_id=conversation.id, content=result["response"], sender="ai")
     db.add(ai_msg)
     db.commit()
-    
-    return {"response": final_response, "conversation_id": conversation.id}
+
+    return {
+        "response": result["response"],
+        "conversation_id": conversation.id,
+        "state": result["state"]
+    }
 
 @app.get("/chat/history/{conversation_id}")
 def get_history(conversation_id: int, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
