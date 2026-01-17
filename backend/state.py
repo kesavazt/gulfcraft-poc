@@ -13,6 +13,11 @@ class AgentState(TypedDict):
     selected_quotation: Optional[Dict[str, Any]]  # User's selected quotation
     awaiting_selection: bool  # True when waiting for user to select a quotation
 
+    # Search parameters (for "show more" functionality)
+    last_search_description: Optional[str]  # Last searched job description
+    last_search_boat_model: Optional[str]  # Last searched boat model
+    current_top_k: int  # Current top_k value for search
+
     # Costing workflow state
     job_id: Optional[str]  # Generated costing job ID (e.g., COST-XXXXXXXX)
     estimation_items: List[Dict[str, Any]]  # Items from EstimationLines

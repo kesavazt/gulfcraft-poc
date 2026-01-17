@@ -6,11 +6,14 @@ load_dotenv()
 TOP_K_ITEMS = 3
 PRICE_THRESHOLD = 1000.0  # Items above this price require quotation
 
-# --- SharePoint Config (Mock) ---
+# --- SharePoint Config ---
 SHAREPOINT_SITE_URL = os.getenv("SHAREPOINT_SITE_URL", "https://gulfcraft.sharepoint.com/sites/costing")
-SHAREPOINT_CLIENT_ID = os.getenv("SHAREPOINT_CLIENT_ID", "mock_sp_client_id")
-SHAREPOINT_CLIENT_SECRET = os.getenv("SHAREPOINT_CLIENT_SECRET", "mock_sp_client_secret")
+SHAREPOINT_TENANT_ID = os.getenv("SHAREPOINT_TENANT_ID", os.getenv("MS_GRAPH_TENANT_ID", ""))
+SHAREPOINT_CLIENT_ID = os.getenv("SHAREPOINT_CLIENT_ID", os.getenv("MS_GRAPH_CLIENT_ID", ""))
+SHAREPOINT_CLIENT_SECRET = os.getenv("SHAREPOINT_CLIENT_SECRET", os.getenv("MS_GRAPH_CLIENT_SECRET", ""))
 SHAREPOINT_LIST_NAME = os.getenv("SHAREPOINT_LIST_NAME", "CostingJobs")
+SHAREPOINT_DRIVE_NAME = os.getenv("SHAREPOINT_DRIVE_NAME", "Documents")
+SHAREPOINT_SITE_ID = os.getenv("SHAREPOINT_SITE_ID", "")  # Optional: direct site ID if Sites.Selected permission
 
 # --- D365 Config (Mock) ---
 D365_API_URL = os.getenv("D365_API_URL", "https://gulfcraft.operations.dynamics.com")
@@ -19,17 +22,17 @@ D365_CLIENT_ID = os.getenv("D365_CLIENT_ID", "mock_d365_client_id")
 D365_CLIENT_SECRET = os.getenv("D365_CLIENT_SECRET", "mock_d365_client_secret")
 
 # --- Email Config ---
-# Legacy SMTP config (kept for reference)
+# SMTP config
 SMTP_SERVER = os.getenv("SMTP_SERVER", "smtp.office365.com")
 SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
-SMTP_USERNAME = os.getenv("SMTP_USERNAME", "costing-bot@gulfcraft.com")
-SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "mock_password")
+SMTP_EMAIL = os.getenv("SMTP_EMAIL", "")
+SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")
 
 # Microsoft Graph API OAuth2 Config
 MS_GRAPH_TENANT_ID = os.getenv("MS_GRAPH_TENANT_ID", os.getenv("D365_TENANT_ID", ""))
 MS_GRAPH_CLIENT_ID = os.getenv("MS_GRAPH_CLIENT_ID", "")
 MS_GRAPH_CLIENT_SECRET = os.getenv("MS_GRAPH_CLIENT_SECRET", "")
-MS_GRAPH_SENDER_EMAIL = os.getenv("MS_GRAPH_SENDER_EMAIL", SMTP_USERNAME)
+MS_GRAPH_SENDER_EMAIL = os.getenv("MS_GRAPH_SENDER_EMAIL", "")
 
 # --- Database Config ---
 # Default to local SQLite for dev, Postgres for prod

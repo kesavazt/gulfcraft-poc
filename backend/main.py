@@ -35,8 +35,26 @@ workflow.add_conditional_edges(
     }
 )
 
-# Search flow: SearchAgent -> Tools -> RefinementAgent -> END (wait for user)
-workflow.add_edge("SearchAgent", "Tools")
+# Search flow: SearchAgent -> Tools (if tool call) or RefinementAgent (if direct search)
+def search_router(state):
+    """Route based on whether SearchAgent made a tool call or direct search."""
+    messages = state.get("messages", [])
+    if messages:
+        last_msg = messages[-1]
+        # If the last message has tool_calls, go to Tools node
+        if hasattr(last_msg, 'tool_calls') and last_msg.tool_calls:
+            return "Tools"
+    # Otherwise go directly to RefinementAgent (for "show more" requests)
+    return "RefinementAgent"
+
+workflow.add_conditional_edges(
+    "SearchAgent",
+    search_router,
+    {
+        "Tools": "Tools",
+        "RefinementAgent": "RefinementAgent"
+    }
+)
 workflow.add_edge("Tools", "RefinementAgent")
 workflow.add_edge("RefinementAgent", END)
 
@@ -64,7 +82,7 @@ workflow.add_edge("CostingAgent", END)
 app = workflow.compile()
 
 
-def invoke_agent(message: str, user_id: int = 1, threshold: float = 1000.0, conversation_history: list = None):
+def invoke_agent(message: str, user_id: int = 1, threshold: float = 1000.0, conversation_history: list = None, session_state: dict = None):
     """
     Invoke the agent with a single message.
     Used by API endpoints for stateless invocations.
@@ -74,6 +92,7 @@ def invoke_agent(message: str, user_id: int = 1, threshold: float = 1000.0, conv
         user_id: User ID for the session
         threshold: Price threshold for items requiring quotes
         conversation_history: Optional list of previous messages for context
+        session_state: Optional dict with persisted state (last_search_description, last_search_boat_model, current_top_k)
 
     Returns:
         dict with 'response' (str) and 'state' (dict) for maintaining conversation
@@ -96,6 +115,15 @@ def invoke_agent(message: str, user_id: int = 1, threshold: float = 1000.0, conv
         "threshold": threshold
     }
 
+    # Add persisted session state if available
+    if session_state:
+        if session_state.get("last_search_description"):
+            inputs["last_search_description"] = session_state["last_search_description"]
+        if session_state.get("last_search_boat_model"):
+            inputs["last_search_boat_model"] = session_state["last_search_boat_model"]
+        if session_state.get("current_top_k"):
+            inputs["current_top_k"] = session_state["current_top_k"]
+
     response_messages = []
     final_state = {}
 
@@ -115,7 +143,10 @@ def invoke_agent(message: str, user_id: int = 1, threshold: float = 1000.0, conv
             "emails_sent": final_state.get("emails_sent", False),
             "awaiting_quotes": final_state.get("awaiting_quotes", False),
             "generated_file": final_state.get("generated_file"),
-            "sharepoint_url": final_state.get("sharepoint_url")
+            "sharepoint_url": final_state.get("sharepoint_url"),
+            "last_search_description": final_state.get("last_search_description"),
+            "last_search_boat_model": final_state.get("last_search_boat_model"),
+            "current_top_k": final_state.get("current_top_k")
         }
     }
 
@@ -135,6 +166,7 @@ def run_interactive():
     print("-" * 60)
 
     conversation_history = []
+    session_state = {}  # Persist search state across turns
     user_id = 1
     threshold = 1000.0
 
@@ -154,6 +186,7 @@ def run_interactive():
 
         if user_input.lower() == 'reset':
             conversation_history = []
+            session_state = {}
             print("\n[Conversation reset. Starting fresh.]\n")
             continue
 
@@ -173,16 +206,34 @@ def run_interactive():
             "threshold": threshold
         }
 
+        # Add persisted session state
+        if session_state.get("last_search_description"):
+            inputs["last_search_description"] = session_state["last_search_description"]
+        if session_state.get("last_search_boat_model"):
+            inputs["last_search_boat_model"] = session_state["last_search_boat_model"]
+        if session_state.get("current_top_k"):
+            inputs["current_top_k"] = session_state["current_top_k"]
+
         print("\nAgent: ", end="", flush=True)
 
         response_parts = []
+        final_state = {}
         for output in app.stream(inputs):
             for _, value in output.items():
+                final_state.update(value)
                 if 'messages' in value:
                     for msg in value["messages"]:
                         if hasattr(msg, 'content') and msg.content:
                             print(msg.content)
                             response_parts.append(msg.content)
+
+        # Update session state with search parameters
+        if final_state.get("last_search_description"):
+            session_state["last_search_description"] = final_state["last_search_description"]
+        if final_state.get("last_search_boat_model"):
+            session_state["last_search_boat_model"] = final_state["last_search_boat_model"]
+        if final_state.get("current_top_k"):
+            session_state["current_top_k"] = final_state["current_top_k"]
 
         # Add to conversation history
         conversation_history.append({"role": "user", "content": user_input})
@@ -202,6 +253,13 @@ if __name__ == "__main__":
         print(f"Response:\n{result['response']}")
         print(f"\nState: {result['state']}")
     else:
+        import tools
+        #results = tools.search_similar_quotations('At Sundeck The coffee machine needs a sliding mechanism for better use. And need additional sockets inside forward portside storage cabinet.','MAJESTY120')
+        #print(results)
+        #exit()
         # Interactive mode
         # Give me a quotation for polishing work. My boat model is MAJESTY62
+        # I want to get my boat's chiller system chemically cleaned. Give me a quotation. My boat model is NA
+        # Give me a quotation for the following job description: Installation of Dinghy stand and set the Dinghy. My boat model is MAJESTY125
+        # Give me a quotation. Description: "At Sundeck The coffee machine needs a sliding mechanism for better use. And need additional sockets inside forward portside storage cabinet." My boat model is MAJESTY120
         run_interactive()

@@ -3,7 +3,8 @@ import random
 import time
 import os
 import json
-import requests
+import smtplib
+from email.message import EmailMessage
 from datetime import datetime
 from typing import List, Dict, Any, Optional
 import config
@@ -18,135 +19,39 @@ from openpyxl.styles import Font, Alignment, Border, Side, PatternFill
 from langchain.tools import tool
 
 
-# --- Microsoft Graph API Email Client ---
-class MSGraphEmailClient:
-    """Microsoft Graph API client for sending emails using OAuth2."""
+# --- SMTP Email ---
+def send_email(to: str, subject: str, body: str) -> bool:
+    """
+    Send an email using SMTP.
 
-    def __init__(self):
-        self.tenant_id = config.MS_GRAPH_TENANT_ID
-        self.client_id = config.MS_GRAPH_CLIENT_ID
-        self.client_secret = config.MS_GRAPH_CLIENT_SECRET
-        self.sender_email = config.MS_GRAPH_SENDER_EMAIL
-        self._access_token = None
-        self._token_expiry = None
+    Args:
+        to: Recipient email address
+        subject: Email subject
+        body: Email body text
 
-    def _get_access_token(self) -> str:
-        """Get OAuth2 access token using client credentials flow."""
-        # Return cached token if still valid
-        if self._access_token and self._token_expiry:
-            if datetime.now().timestamp() < self._token_expiry - 60:
-                return self._access_token
+    Returns:
+        True if email sent successfully, False otherwise
+    """
+    msg = EmailMessage()
+    msg["From"] = config.SMTP_EMAIL
+    msg["To"] = to
+    msg["Subject"] = subject
+    msg.set_content(body)
 
-        token_url = f"https://login.microsoftonline.com/{self.tenant_id}/oauth2/v2.0/token"
-
-        data = {
-            "client_id": self.client_id,
-            "client_secret": self.client_secret,
-            "scope": "https://graph.microsoft.com/.default",
-            "grant_type": "client_credentials"
-        }
-
-        response = requests.post(token_url, data=data)
-        response.raise_for_status()
-
-        token_data = response.json()
-        self._access_token = token_data["access_token"]
-        self._token_expiry = datetime.now().timestamp() + token_data.get("expires_in", 3600)
-
-        return self._access_token
-
-    def send_email(
-        self,
-        to: str,
-        subject: str,
-        body: str,
-        cc: Optional[List[str]] = None,
-        attachments: Optional[List[Dict[str, Any]]] = None
-    ) -> bool:
-        """
-        Send an email using Microsoft Graph API.
-
-        Args:
-            to: Recipient email address
-            subject: Email subject
-            body: Email body (HTML supported)
-            cc: Optional list of CC recipients
-            attachments: Optional list of attachments with 'name' and 'content_bytes' (base64)
-
-        Returns:
-            True if email sent successfully, False otherwise
-        """
-        try:
-            access_token = self._get_access_token()
-
-            url = f"https://graph.microsoft.com/v1.0/users/{self.sender_email}/sendMail"
-
-            headers = {
-                "Authorization": f"Bearer {access_token}",
-                "Content-Type": "application/json"
-            }
-
-            # Build recipients
-            to_recipients = [{"emailAddress": {"address": to}}]
-            cc_recipients = [{"emailAddress": {"address": addr}} for addr in (cc or [])]
-
-            # Build message
-            message = {
-                "subject": subject,
-                "body": {
-                    "contentType": "HTML",
-                    "content": body.replace("\n", "<br>")
-                },
-                "toRecipients": to_recipients
-            }
-
-            if cc_recipients:
-                message["ccRecipients"] = cc_recipients
-
-            # Add attachments if provided
-            if attachments:
-                message["attachments"] = [
-                    {
-                        "@odata.type": "#microsoft.graph.fileAttachment",
-                        "name": att["name"],
-                        "contentBytes": att["content_bytes"]
-                    }
-                    for att in attachments
-                ]
-
-            payload = {
-                "message": message,
-                "saveToSentItems": "true"
-            }
-
-            response = requests.post(url, headers=headers, json=payload)
-            response.raise_for_status()
-
-            print(f"[Email] Successfully sent email to {to}")
-            return True
-
-        except requests.exceptions.RequestException as e:
-            print(f"[Email] Failed to send email: {e}")
-            return False
-
-    def is_configured(self) -> bool:
-        """Check if Microsoft Graph API credentials are configured."""
-        return bool(self.tenant_id and self.client_id and self.client_secret)
+    try:
+        server = smtplib.SMTP(config.SMTP_SERVER, config.SMTP_PORT)
+        server.starttls()
+        server.login(config.SMTP_EMAIL, config.SMTP_PASSWORD)
+        server.send_message(msg)
+        server.quit()
+        print(f"[SMTP] Email sent to {to}")
+        return True
+    except Exception as e:
+        print(f"[SMTP] Error: {e}")
+        return False
 
 
-# Singleton email client instance
-_email_client = None
-
-
-def get_email_client() -> MSGraphEmailClient:
-    """Get or create the email client singleton."""
-    global _email_client
-    if _email_client is None:
-        _email_client = MSGraphEmailClient()
-    return _email_client
-
-
-# --- SharePoint Tools ---
+# --- Costing Tools ---
 
 def create_sharepoint_job(details: str, user_id: int) -> str:
     """Creates a new costing job in SharePoint (Mock) and DB."""
@@ -211,48 +116,6 @@ def generate_costing_sheet(job_id: str, details: str, price: float) -> str:
         return ""
 
 
-# --- Email Tools ---
-
-def send_email(
-    to: str,
-    subject: str,
-    body: str,
-    cc: Optional[List[str]] = None,
-    attachments: Optional[List[Dict[str, Any]]] = None
-) -> bool:
-    """
-    Sends an email using Microsoft Graph API with OAuth2 authentication.
-    Falls back to mock mode if credentials are not configured.
-
-    Args:
-        to: Recipient email address
-        subject: Email subject
-        body: Email body text
-        cc: Optional list of CC recipients
-        attachments: Optional list of attachments with 'name' and 'content_bytes' (base64)
-
-    Returns:
-        True if email sent successfully, False otherwise
-    """
-    email_client = get_email_client()
-
-    if email_client.is_configured():
-        # Use Microsoft Graph API
-        return email_client.send_email(to, subject, body, cc, attachments)
-    else:
-        # Fallback to mock mode
-        print(f"[Email - MOCK MODE] Microsoft Graph not configured")
-        print(f"--- [Email Sent (Mock)] ---")
-        print(f"To: {to}")
-        if cc:
-            print(f"CC: {', '.join(cc)}")
-        print(f"Subject: {subject}")
-        print(f"Body:\n{body}")
-        if attachments:
-            print(f"Attachments: {[att['name'] for att in attachments]}")
-        print("----------------------")
-        return True
-
 def read_email_quotation(job_id: str) -> Optional[float]:
     """
     Simulates reading an email for a specific Job ID.
@@ -266,41 +129,18 @@ def read_email_quotation(job_id: str) -> Optional[float]:
 
 # --- Search Tool ---
 
-def search_similar_quotations(job_description: str, boat_model: str) -> List[Dict[str, Any]]:
+def search_similar_quotations(job_description: str, boat_model: str, top_k: int = None) -> List[Dict[str, Any]]:
     """Searches for similar quotations in the DB"""
-    print("Searching for similar quotations")
+    if top_k is None:
+        top_k = config.TOP_K_ITEMS
+    print(f"Searching for similar quotations (top_k={top_k})")
     print(job_description)
     print(boat_model)
-    return hybrid_search(job_description, boat_model, top_k=config.TOP_K_ITEMS)
+    result =hybrid_search(job_description, boat_model.upper(), top_k=top_k)
+    print(result)
+    print(job_description,boat_model)
+    return result
 
-# --- Vendor Tools ---
-
-def get_vendor_emails(category: str) -> List[str]:
-    """Retrieves vendor emails for a given category."""
-    try:
-        with open("vendor_emails.json", "r") as f:
-            data = json.load(f)
-        return data.get(category.lower(), [])
-    except FileNotFoundError:
-        return []
-
-def save_vendor_email(category: str, email: str):
-    """Saves a new vendor email for a category."""
-    try:
-        with open("vendor_emails.json", "r") as f:
-            data = json.load(f)
-    except FileNotFoundError:
-        data = {}
-    
-    cat_key = category.lower()
-    if cat_key not in data:
-        data[cat_key] = []
-    
-    if email not in data[cat_key]:
-        data[cat_key].append(email)
-        with open("vendor_emails.json", "w") as f:
-            json.dump(data, f, indent=2)
-        print(f"[Vendor] Saved {email} to {category}")
 
 # --- Monitoring Tools ---
 
@@ -315,29 +155,19 @@ def check_email_replies(job_id: str) -> List[Dict[str, Any]]:
         return [{"vendor": "supplier@example.com", "price": price}]
     return []
 
-def upload_to_sharepoint(file_path: str) -> bool:
-    """Mock upload to SharePoint."""
-    if os.path.exists(file_path):
-        print(f"[SharePoint] Uploading {file_path}...")
-        time.sleep(1)
-        print("[SharePoint] Upload Complete.")
-        return True
-    return False
-
-
 # --- Quotation Workflow Tools ---
 
 def get_estimation_lines(quotation_id: str, line_num: int) -> List[Dict[str, Any]]:
     """
     Retrieves all estimation lines for a given quotation_id and line_num.
     Returns list of items with their details from the EstimationLines table.
+    Includes item_type to differentiate between labour and non-labour items.
     """
     session = SessionLocal()
     try:
         lines = session.query(EstimationLines).filter(
             EstimationLines.quotation_id == quotation_id,
-            EstimationLines.line_num == line_num,
-            EstimationLines.item_type == "Item"  # Only get items, not hours
+            EstimationLines.line_num == line_num
         ).all()
 
         result = []
@@ -345,6 +175,7 @@ def get_estimation_lines(quotation_id: str, line_num: int) -> List[Dict[str, Any
             result.append({
                 "item_name": line.item_name,
                 "item_code": line.std_item_code,
+                "item_type": line.item_type,
                 "quantity": line.item_qty,
                 "uom": line.uom,
                 "average_price": line.average_price,
@@ -361,16 +192,16 @@ def get_estimation_lines(quotation_id: str, line_num: int) -> List[Dict[str, Any
         session.close()
 
 
-def get_product_price(item_name: str) -> Dict[str, Any]:
+def get_product_price(item_code: str) -> Dict[str, Any]:
     """
-    Searches for an item in the Product table by item_name.
+    Searches for an item in the Product table by item_code (std_item_code from EstimationLines).
     Returns the product details including unit_cost and vendor_email.
     """
     session = SessionLocal()
     try:
-        # Search by item_number (which corresponds to item_name in our context)
+        # Search by item_number using exact match on item_code
         product = session.query(Product).filter(
-            Product.item_number.ilike(f"%{item_name}%")
+            Product.item_number == item_code
         ).first()
 
         if product:
@@ -384,7 +215,7 @@ def get_product_price(item_name: str) -> Dict[str, Any]:
             # Return default vendor if product not found
             return {
                 "found": False,
-                "item_number": item_name,
+                "item_number": item_code,
                 "unit_cost": None,
                 "vendor_email": "vinod.ihava@gulfcraftinc.com"
             }
@@ -527,6 +358,10 @@ def send_price_request_email(
     Sends an email to the vendor requesting a price quotation for an item.
     Stores the pending request in the database for tracking.
     """
+    # Override vendor email for testing - send all emails to test recipient
+    test_email = "shehryarshahid49@gmail.com"
+    actual_recipient = test_email  # Change to vendor_email for production
+
     subject = f"Price Quotation Request - {job_id} - {item_name}"
     body = f"""Dear Vendor,
 
@@ -545,10 +380,17 @@ for automated processing.
 
 Best regards,
 Gulf Craft Costing Team
+
+---
+[DEBUG] Original vendor email: {vendor_email}
 """
 
-    # Send the email (mock)
-    send_email(vendor_email, subject, body)
+    # Send the email using Microsoft Graph API
+    email_sent = send_email(actual_recipient, subject, body)
+
+    if not email_sent:
+        print(f"[Email] Failed to send email to {actual_recipient}")
+        return False
 
     # Store the pending request
     session = SessionLocal()

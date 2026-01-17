@@ -186,11 +186,58 @@ def get_requests(current_user: User = Depends(get_current_user), db: Session = D
 
 from fastapi.responses import FileResponse
 import os
+import glob as glob_module
 
-# ... (Existing code)
+# --- Costing Sheet Downloads ---
+
+@app.get("/costing-sheets")
+def list_costing_sheets(current_user: User = Depends(get_current_user)):
+    """List all available costing sheets."""
+    downloads_dir = "temp_downloads"
+    if not os.path.exists(downloads_dir):
+        return {"sheets": []}
+
+    sheets = []
+    for filepath in glob_module.glob(os.path.join(downloads_dir, "*.xlsx")):
+        filename = os.path.basename(filepath)
+        stat = os.stat(filepath)
+        sheets.append({
+            "filename": filename,
+            "size": stat.st_size,
+            "created": datetime.fromtimestamp(stat.st_ctime).isoformat(),
+            "download_url": f"/costing-sheets/{filename}"
+        })
+
+    # Sort by creation time, newest first
+    sheets.sort(key=lambda x: x["created"], reverse=True)
+    return {"sheets": sheets}
+
+
+@app.get("/costing-sheets/{filename}")
+def download_costing_sheet(filename: str, current_user: User = Depends(get_current_user)):
+    """Download a specific costing sheet."""
+    # Prevent directory traversal
+    if ".." in filename or "/" in filename or "\\" in filename:
+        raise HTTPException(status_code=400, detail="Invalid filename")
+
+    file_path = os.path.join("temp_downloads", filename)
+    if not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail="Costing sheet not found")
+
+    return FileResponse(
+        file_path,
+        filename=filename,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
+
 
 @app.get("/download/{filename}")
 def download_file(filename: str, current_user: User = Depends(get_current_user)):
+    """Generic file download endpoint."""
+    # Prevent directory traversal
+    if ".." in filename or "/" in filename or "\\" in filename:
+        raise HTTPException(status_code=400, detail="Invalid filename")
+
     file_path = os.path.join("temp_downloads", filename)
     if os.path.exists(file_path):
         return FileResponse(file_path, filename=filename)

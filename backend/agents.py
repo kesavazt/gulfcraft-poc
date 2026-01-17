@@ -29,7 +29,7 @@ system_prompt = (
     "Logic:"
     "\n1. If the user input is casual (e.g., 'hello', 'how are you', 'hi'), respond with a friendly greeting and respond with FINISH"
     "\n2. If the user wants to create a job or is requesting a quotation, route to 'SearchAgent'. Only route if the information is complete. The user query must have a job_description and boat_model (e.g MAJESTY62, MAJESTY100, etc)"
-    "\n3. If the user is selecting a quotation (providing a quotation ID like 'AJMFQ-000001' or saying 'I select option 1'), route to 'SelectionAgent'"
+    "\n3. If the user is selecting a quotation (providing quotation_id:line_num like 'AJMFQ-000001:1'), route to 'SelectionAgent'"
     "\n4. If the user asks to see more quotations, route to 'SearchAgent'"
     "\n5. If a quotation has been selected and we need to generate costing, route to 'CostingAgent'"
 )
@@ -92,27 +92,78 @@ def search_node(state: AgentState):
     """Searches for similar quotations based on user's job description and boat model."""
     user_query = state["messages"][-1].content
 
-    # Extract description and boat model using LLM
-    extraction_prompt = [
-        ("system",
-         f"""
+    # Check if this is a "show more" request
+    show_more_phrases = ["more quotation", "show more", "see more", "other quotation", "different quotation"]
+    is_show_more = any(phrase in user_query.lower() for phrase in show_more_phrases)
+
+    # Get previous search parameters if available
+    last_description = state.get("last_search_description")
+    last_boat_model = state.get("last_search_boat_model")
+    current_top_k = state.get("current_top_k", config.TOP_K_ITEMS)
+
+    if is_show_more and last_description and last_boat_model:
+        # Increase top_k and use previous search parameters
+        new_top_k = current_top_k + 5
+        search_results = tools.search_similar_quotations(last_description, last_boat_model, top_k=new_top_k)
+
+        # Create a message with the results
+        result_content = str(search_results) if search_results else "No additional quotations found."
+
+        return {
+            "messages": [AIMessage(content=result_content)],
+            "current_top_k": new_top_k
+        }
+    else:
+        # Extract description and boat model using LLM for new search
+        extraction_prompt = [
+            ("system",
+             f"""
 The user has asked the following query: {user_query}
 
 The user wants a job done. He has provided a description and boat model. Extract the description and boat model and
 use the search_similar_quotations tool to get a list of similar quotations. When extracting description, don't miss important keywords like fitting,
 leaking, plumbing etc from the description if there are any.
 """),
-    ]
-    llm_with_tools = llm.bind_tools([tools.search_similar_quotations])
-    result = llm_with_tools.invoke(extraction_prompt)
+        ]
+        llm_with_tools = llm.bind_tools([tools.search_similar_quotations])
+        result = llm_with_tools.invoke(extraction_prompt)
 
-    return {"messages": [result]}
+        # Try to extract the parameters from the tool call for future "show more" requests
+        new_description = None
+        new_boat_model = None
+        if result.tool_calls:
+            for tool_call in result.tool_calls:
+                if tool_call.get("name") == "search_similar_quotations":
+                    args = tool_call.get("args", {})
+                    new_description = args.get("job_description")
+                    new_boat_model = args.get("boat_model")
+                    break
+
+        return {
+            "messages": [result],
+            "last_search_description": new_description,
+            "last_search_boat_model": new_boat_model,
+            "current_top_k": config.TOP_K_ITEMS
+        }
 
 
 def refinement_node(state: AgentState):
     """Presents search results to user and asks for selection."""
-    fetched_quotations = state["messages"][-1].content
-    print(state["messages"][-1].content)
+    # Get the tool output from messages - could be ToolMessage or regular message
+    messages = state.get("messages", [])
+
+    fetched_quotations = ""
+    # Look for the tool message with search results (iterate from end)
+    for msg in reversed(messages):
+        if hasattr(msg, 'content') and msg.content:
+            fetched_quotations = msg.content
+            break
+
+    if not fetched_quotations:
+        return {
+            "messages": [AIMessage(content="I couldn't find any quotations. Please try again with a different description or boat model.")],
+            "awaiting_selection": False
+        }
 
     presentation_prompt = [
         ("system",
@@ -120,9 +171,9 @@ def refinement_node(state: AgentState):
 Following is a list of quotations:
 {fetched_quotations}
 
-Present each of these to the user. Mention all attributes of each quotation. Don't skip anything.
+Present each of these to the user. Mention all attributes of each quotation including the quotation_id and line_num. Don't skip anything.
 Use bulleted list, don't use numbers when presenting.
-Ask the user to select one of these quotations by entering the selected quotation's id.
+Ask the user to select one of these quotations by entering the selection in the format: **quotation_id:line_num** (e.g., AJMFQ-000001:1).
 They can also ask to see more quotations if none of these match their needs.
 '''
          )
@@ -140,22 +191,26 @@ def selection_node(state: AgentState):
     user_message = state["messages"][-1].content
     similar_quotations = state.get("similar_quotations", [])
 
-    # Extract quotation ID from user message using regex
-    quotation_id_match = re.search(r'(AJMFQ-\d+)', user_message, re.IGNORECASE)
+    # Extract quotation ID and line number in format quotation_id:line_num
+    # e.g., "AJMFQ-000001:1" or "AJMFQ-000001:10"
+    selection_match = re.search(r'(AJMFQ-\d+):(\d+)', user_message, re.IGNORECASE)
 
     selected = None
 
-    # First, try to find in similar_quotations if available
-    if similar_quotations:
-        for q in similar_quotations:
-            if q.get("quotation_id") in user_message or q.get("id") in user_message:
-                selected = q
-                break
+    if selection_match:
+        quotation_id = selection_match.group(1).upper()
+        line_num = int(selection_match.group(2))
 
-    # If not found in similar_quotations but we have a quotation ID, fetch directly from DB
-    if not selected and quotation_id_match:
-        quotation_id = quotation_id_match.group(1).upper()
-        selected = tools.get_quotation_by_id(quotation_id)
+        # First, try to find in similar_quotations if available
+        if similar_quotations:
+            for q in similar_quotations:
+                if q.get("quotation_id") == quotation_id and q.get("line_num") == line_num:
+                    selected = q
+                    break
+
+        # If not found in similar_quotations, fetch directly from DB
+        if not selected:
+            selected = tools.get_quotation_by_id(quotation_id, line_num)
 
     # If still not found, use LLM to extract and try again
     if not selected:
@@ -164,27 +219,29 @@ def selection_node(state: AgentState):
              f"""
 The user has selected a quotation. Their message is: "{user_message}"
 
-Extract the quotation ID from the user's message. Quotation IDs follow the pattern "AJMFQ-XXXXXX" (e.g., "AJMFQ-000001").
+Extract the quotation ID and line number from the user's message.
+The format should be: quotation_id:line_num (e.g., "AJMFQ-000001:1")
 
-If the user says something like "option 1" or "the first one", explain that you need the actual quotation ID.
+If the user provides just a quotation ID without a line number, or says something like "option 1",
+explain that they need to provide both the quotation ID and line number in the format quotation_id:line_num.
 
-Return ONLY the quotation ID if found, or explain what you need if not found.
+Return ONLY the quotation_id:line_num if found, or explain what format is needed.
 """),
         ]
         result = llm.invoke(extraction_prompt)
 
-        # Try to extract ID from LLM response
-        llm_match = re.search(r'(AJMFQ-\d+)', result.content, re.IGNORECASE)
+        # Try to extract ID:line_num from LLM response
+        llm_match = re.search(r'(AJMFQ-\d+):(\d+)', result.content, re.IGNORECASE)
         if llm_match:
             quotation_id = llm_match.group(1).upper()
-            selected = tools.get_quotation_by_id(quotation_id)
+            line_num = int(llm_match.group(2))
+            selected = tools.get_quotation_by_id(quotation_id, line_num)
 
     # If we found a selection, confirm and move to costing
     if selected:
-        confirmation_msg = f"""I've selected quotation **{selected.get('quotation_id')}**:
+        confirmation_msg = f"""I've selected quotation **{selected.get('quotation_id')}** (Line {selected.get('line_num')}):
 - Description: {selected.get('description')}
 - Boat Model: {selected.get('boat_model') or selected.get('afz_boat_model_id')}
-- Line Number: {selected.get('line_num')}
 
 Now I'll retrieve the items for this quotation and generate a costing sheet."""
 
@@ -196,7 +253,7 @@ Now I'll retrieve the items for this quotation and generate a costing sheet."""
         }
     else:
         return {
-            "messages": [AIMessage(content="I couldn't identify which quotation you selected. Please provide the quotation ID (e.g., AJMFQ-000001).")],
+            "messages": [AIMessage(content="I couldn't identify your selection. Please provide both the quotation ID and line number in the format **quotation_id:line_num** (e.g., AJMFQ-000001:1).")],
             "awaiting_selection": True,
             "next": "__end__"  # Explicitly set to end so it doesn't use stale value from Supervisor
         }
@@ -241,27 +298,41 @@ def costing_node(state: AgentState):
         }
 
     # Step 3: Look up prices for each item
+    # Labour items use sales_price from estimation_lines
+    # Non-labour items get price from Products table
     costing_items = []
     pending_quote_items = []
 
     for item in estimation_items:
         item_name = item.get("item_name", "")
-        product_info = tools.get_product_price(item_name)
+        item_type = item.get("item_type", "")
+        is_labour = item_type.lower() == "hour"
 
         costing_item = {
             "item_name": item_name,
             "item_code": item.get("item_code"),
+            "item_type": item_type,
             "quantity": item.get("quantity", 1),
-            "unit_price": product_info.get("unit_cost"),
-            "vendor_email": product_info.get("vendor_email", "vinod.ihava@gulfcraftinc.com")
+            "is_labour": is_labour
         }
 
-        # Check if price exists and is below threshold
-        if product_info.get("unit_cost") is not None and product_info.get("unit_cost") <= threshold:
+        if is_labour:
+            # For labour items, use sales_price from estimation_lines
+            costing_item["unit_price"] = item.get("sales_price")
             costing_item["price_status"] = "resolved"
+            costing_item["vendor_email"] = None
         else:
-            costing_item["price_status"] = "pending_quote"
-            pending_quote_items.append(costing_item)
+            # For non-labour items, get price from Products table using item_code
+            item_code = item.get("item_code", "")
+            product_info = tools.get_product_price(item_code)
+            costing_item["unit_price"] = product_info.get("unit_cost")
+            costing_item["vendor_email"] = product_info.get("vendor_email", "vinod.ihava@gulfcraftinc.com")
+            # Check if price exists and is below threshold
+            if product_info.get("unit_cost") is not None and product_info.get("unit_cost") <= threshold:
+                costing_item["price_status"] = "resolved"
+            else:
+                costing_item["price_status"] = "pending_quote"
+                pending_quote_items.append(costing_item)
 
         costing_items.append(costing_item)
 
@@ -286,26 +357,28 @@ def costing_node(state: AgentState):
             )
         emails_sent = True
 
-    # Step 7: Upload to SharePoint
+    # Step 7: Set download URL for the costing sheet
     sharepoint_url = None
     if file_path:
-        tools.upload_to_sharepoint(file_path)
-        sharepoint_url = f"{config.SHAREPOINT_SITE_URL}/costing_{job_id}.xlsx"
+        sharepoint_url = f"/costing-sheets/{file_path}"
 
     # Build response message
-    resolved_count = len([i for i in costing_items if i["price_status"] == "resolved"])
+    labour_items = [i for i in costing_items if i.get("is_labour")]
+    non_labour_resolved = [i for i in costing_items if not i.get("is_labour") and i["price_status"] == "resolved"]
     pending_count = len(pending_quote_items)
 
     response_parts = [
         f"**Costing Job Created: {job_id}**\n",
         f"- Quotation: {quotation_id}",
+        f"- Line Number: {line_num}",
         f"- Total Items: {len(costing_items)}",
-        f"- Items with resolved prices: {resolved_count}",
+        f"- Labour Items: {len(labour_items)} (price from estimation)",
+        f"- Non-Labour Items with resolved prices: {len(non_labour_resolved)}",
         f"- Items pending quotes: {pending_count}",
     ]
 
     if pending_quote_items:
-        response_parts.append(f"\n**Items Requiring Price Quotes (>{threshold} AED):**")
+        response_parts.append(f"\n**Items Requiring Price Quotes (>{threshold} AED or not found in Products):**")
         for item in pending_quote_items:
             response_parts.append(f"  - {item['item_name']} (email sent to {item['vendor_email']})")
 
@@ -330,33 +403,4 @@ def costing_node(state: AgentState):
         "awaiting_quotes": len(pending_quote_items) > 0
     }
 
-
-# --- Email Agent (kept for backwards compatibility) ---
-email_tools = [
-    tools.get_vendor_emails,
-    tools.save_vendor_email,
-    tools.create_sharepoint_job,
-    tools.send_email,
-    tools.check_email_replies,
-    tools.update_sharepoint_job
-]
-email_agent = create_react_agent(llm, tools=email_tools)
-
-
-def email_node(state: AgentState):
-    result = email_agent.invoke(state)
-    return {"messages": result["messages"]}
-
-
-# --- SharePoint Agent (kept for backwards compatibility) ---
-sharepoint_tools = [
-    tools.generate_costing_sheet,
-    tools.upload_to_sharepoint
-]
-sharepoint_agent = create_react_agent(llm, tools=sharepoint_tools)
-
-
-def sharepoint_node(state: AgentState):
-    result = sharepoint_agent.invoke(state)
-    return {"messages": result["messages"]}
 

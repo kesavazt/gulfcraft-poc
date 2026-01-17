@@ -147,4 +147,5 @@ engine = create_engine(config.DATABASE_URL, connect_args={"check_same_thread": F
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 def init_db():
+    Base.metadata.drop_all(bind=engine)
     Base.metadata.create_all(bind=engine)     
