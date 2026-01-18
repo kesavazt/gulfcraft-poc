@@ -47,4 +47,51 @@ export const getUser = async () => {
     return response.data;
 };
 
+export const downloadFile = (downloadUrl) => {
+    // Create a temporary link to trigger the download
+    const token = localStorage.getItem('token');
+    const fullUrl = `${API_URL}${downloadUrl}`;
+
+    // Use fetch with auth header to download the file
+    fetch(fullUrl, {
+        headers: {
+            'Authorization': `Bearer ${token}`
+        }
+    })
+    .then(response => {
+        if (!response.ok) {
+            throw new Error('Download failed');
+        }
+        // Get filename from Content-Disposition header or URL
+        const contentDisposition = response.headers.get('Content-Disposition');
+        let filename = 'costing_sheet.xlsx';
+        if (contentDisposition) {
+            const match = contentDisposition.match(/filename="?(.+)"?/);
+            if (match) {
+                filename = match[1];
+            }
+        } else {
+            // Extract from URL
+            const urlParts = downloadUrl.split('/');
+            filename = urlParts[urlParts.length - 1] || filename;
+        }
+        return response.blob().then(blob => ({ blob, filename }));
+    })
+    .then(({ blob, filename }) => {
+        // Create a download link and trigger it
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        window.URL.revokeObjectURL(url);
+        document.body.removeChild(a);
+        console.log('Download completed:', filename);
+    })
+    .catch(error => {
+        console.error('Download error:', error);
+    });
+};
+
 export default api;

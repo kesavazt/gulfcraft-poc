@@ -23,14 +23,13 @@ workflow.add_node("CostingAgent", costing_node)
 # Set entry point
 workflow.set_entry_point("Supervisor")
 
-# Supervisor routing
+# Supervisor routing (CostingAgent is not directly routable - only via SelectionAgent)
 workflow.add_conditional_edges(
     "Supervisor",
     lambda x: x["next"],
     {
         "SearchAgent": "SearchAgent",
         "SelectionAgent": "SelectionAgent",
-        "CostingAgent": "CostingAgent",
         "FINISH": END
     }
 )

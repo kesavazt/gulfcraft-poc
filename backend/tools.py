@@ -19,10 +19,14 @@ from openpyxl.styles import Font, Alignment, Border, Side, PatternFill
 from langchain.tools import tool
 
 
-# --- SMTP Email ---
+# --- SMTP Email (Gmail) ---
+# Gmail SMTP settings
+GMAIL_SMTP_SERVER = "smtp.gmail.com"
+GMAIL_SMTP_PORT = 587
+
 def send_email(to: str, subject: str, body: str) -> bool:
     """
-    Send an email using SMTP.
+    Send an email using Gmail SMTP.
 
     Args:
         to: Recipient email address
@@ -38,10 +42,13 @@ def send_email(to: str, subject: str, body: str) -> bool:
     msg["Subject"] = subject
     msg.set_content(body)
 
+    # Use Gmail App Password if available, otherwise fall back to SMTP_PASSWORD
+    smtp_password = os.getenv("GMAIL_APP_PASSWORD", "").strip('"') or config.SMTP_PASSWORD
+
     try:
-        server = smtplib.SMTP(config.SMTP_SERVER, config.SMTP_PORT)
+        server = smtplib.SMTP(GMAIL_SMTP_SERVER, GMAIL_SMTP_PORT)
         server.starttls()
-        server.login(config.SMTP_EMAIL, config.SMTP_PASSWORD)
+        server.login(config.SMTP_EMAIL, smtp_password)
         server.send_message(msg)
         server.quit()
         print(f"[SMTP] Email sent to {to}")
@@ -65,7 +72,7 @@ def create_sharepoint_job(details: str, user_id: int) -> str:
             user_id=user_id,
             job_id=job_id,
             item_details=details,
-            status="Pending"
+            status="Completed"  # Default to Completed
         )
         session.add(req)
         session.commit()
@@ -133,12 +140,12 @@ def search_similar_quotations(job_description: str, boat_model: str, top_k: int 
     """Searches for similar quotations in the DB"""
     if top_k is None:
         top_k = config.TOP_K_ITEMS
-    print(f"Searching for similar quotations (top_k={top_k})")
-    print(job_description)
-    print(boat_model)
+    #print(f"Searching for similar quotations (top_k={top_k})")
+    #print(job_description)
+    #print(boat_model)
     result =hybrid_search(job_description, boat_model.upper(), top_k=top_k)
-    print(result)
-    print(job_description,boat_model)
+    #print(result)
+    #print(job_description,boat_model)
     return result
 
 
@@ -245,7 +252,7 @@ def create_costing_request(
             quotation_id=quotation_id,
             line_num=line_num,
             item_details=item_details,
-            status="Pending"
+            status="Completed"  # Default to Completed, will be updated to "Awaiting Quote" if items need quotes
         )
         session.add(req)
         session.commit()
@@ -267,15 +274,20 @@ def create_costing_sheet_with_items(
     """
     Generates a costing sheet Excel file with the provided items.
     Items with price > threshold have 'pending' as their price.
+    Applies profit margin from config to calculate selling prices.
     Returns the file path of the generated sheet.
     """
     wb = Workbook()
     ws = wb.active
     ws.title = "Costing Sheet"
 
+    # Get profit margin from config
+    profit_margin = config.PROFIT_MARGIN
+
     # Header styling
     header_font = Font(bold=True, color="FFFFFF")
     header_fill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
+    profit_fill = PatternFill(start_color="70AD47", end_color="70AD47", fill_type="solid")  # Green for profit columns
     thin_border = Border(
         left=Side(style='thin'),
         right=Side(style='thin'),
@@ -292,20 +304,27 @@ def create_costing_sheet_with_items(
     ws['B3'] = description
     ws['A4'] = "Date:"
     ws['B4'] = datetime.now().strftime("%Y-%m-%d %H:%M")
+    ws['A5'] = "Profit Margin:"
+    ws['B5'] = f"{(profit_margin - 1) * 100:.0f}%" if profit_margin > 1 else f"{profit_margin * 100:.0f}%"
 
-    # Column headers
-    headers = ["Item Name", "Item Code", "Quantity", "Unit Price", "Total", "Status"]
+    # Column headers - added Selling Price columns
+    headers = ["Item Name", "Item Code", "Qty", "Unit Cost", "Total Cost", "Unit Sell", "Total Sell", "Status"]
     for col, header in enumerate(headers, start=1):
-        cell = ws.cell(row=6, column=col, value=header)
+        cell = ws.cell(row=7, column=col, value=header)
         cell.font = header_font
-        cell.fill = header_fill
+        # Use green fill for selling price columns
+        if col in [6, 7]:
+            cell.fill = profit_fill
+        else:
+            cell.fill = header_fill
         cell.border = thin_border
         cell.alignment = Alignment(horizontal='center')
 
     # Add items
     total_cost = 0
+    total_selling = 0
     pending_items = []
-    row = 7
+    row = 8
 
     for item in items:
         ws.cell(row=row, column=1, value=item.get("item_name", "")).border = thin_border
@@ -314,28 +333,62 @@ def create_costing_sheet_with_items(
 
         price = item.get("unit_price")
         status = item.get("price_status", "resolved")
+        quantity = item.get("quantity", 1)
 
         if status == "pending_quote" or price is None:
             ws.cell(row=row, column=4, value="PENDING").border = thin_border
             ws.cell(row=row, column=5, value="PENDING").border = thin_border
-            ws.cell(row=row, column=6, value="Awaiting Quote").border = thin_border
+            ws.cell(row=row, column=6, value="PENDING").border = thin_border
+            ws.cell(row=row, column=7, value="PENDING").border = thin_border
+            ws.cell(row=row, column=8, value="Awaiting Quote").border = thin_border
             pending_items.append(item)
         else:
-            ws.cell(row=row, column=4, value=price).border = thin_border
-            item_total = price * item.get("quantity", 1)
-            ws.cell(row=row, column=5, value=item_total).border = thin_border
-            ws.cell(row=row, column=6, value="Resolved").border = thin_border
-            total_cost += item_total
+            # Cost columns
+            ws.cell(row=row, column=4, value=round(price, 2)).border = thin_border
+            item_total_cost = price * quantity
+            ws.cell(row=row, column=5, value=round(item_total_cost, 2)).border = thin_border
+
+            # Selling price columns (with profit margin applied)
+            unit_selling = price * profit_margin
+            item_total_selling = item_total_cost * profit_margin
+            ws.cell(row=row, column=6, value=round(unit_selling, 2)).border = thin_border
+            ws.cell(row=row, column=7, value=round(item_total_selling, 2)).border = thin_border
+
+            ws.cell(row=row, column=8, value="Resolved").border = thin_border
+
+            total_cost += item_total_cost
+            total_selling += item_total_selling
 
         row += 1
 
     # Add total row
     row += 1
-    ws.cell(row=row, column=4, value="TOTAL:").font = Font(bold=True)
+    total_font = Font(bold=True)
+
+    ws.cell(row=row, column=4, value="TOTAL:").font = total_font
     if pending_items:
-        ws.cell(row=row, column=5, value=f"{total_cost} + PENDING")
+        ws.cell(row=row, column=5, value=f"{round(total_cost, 2)} + PENDING").font = total_font
+        ws.cell(row=row, column=7, value=f"{round(total_selling, 2)} + PENDING").font = total_font
     else:
-        ws.cell(row=row, column=5, value=total_cost)
+        ws.cell(row=row, column=5, value=round(total_cost, 2)).font = total_font
+        ws.cell(row=row, column=7, value=round(total_selling, 2)).font = total_font
+
+    # Add profit summary row
+    row += 1
+    ws.cell(row=row, column=4, value="PROFIT:").font = total_font
+    if not pending_items:
+        profit_amount = total_selling - total_cost
+        ws.cell(row=row, column=7, value=round(profit_amount, 2)).font = total_font
+
+    # Adjust column widths
+    ws.column_dimensions['A'].width = 30
+    ws.column_dimensions['B'].width = 15
+    ws.column_dimensions['C'].width = 8
+    ws.column_dimensions['D'].width = 12
+    ws.column_dimensions['E'].width = 12
+    ws.column_dimensions['F'].width = 12
+    ws.column_dimensions['G'].width = 12
+    ws.column_dimensions['H'].width = 15
 
     # Save file
     filename = f"costing_{job_id}.xlsx"
@@ -343,7 +396,7 @@ def create_costing_sheet_with_items(
     os.makedirs("temp_downloads", exist_ok=True)
     wb.save(output_path)
 
-    print(f"[CostingSheet] Generated: {output_path}")
+    print(f"[CostingSheet] Generated: {output_path} (Profit Margin: {profit_margin}x)")
     return output_path
 
 
@@ -412,7 +465,7 @@ Gulf Craft Costing Team
             session.add(pending_req)
 
             # Update costing request status
-            costing_req.status = "Awaiting Quotes"
+            costing_req.status = "Awaiting Quote"
             session.commit()
             print(f"[Email] Sent price request for {item_name} to {vendor_email}")
             return True

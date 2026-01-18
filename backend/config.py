@@ -5,6 +5,7 @@ load_dotenv()
 # --- Application Config ---
 TOP_K_ITEMS = 3
 PRICE_THRESHOLD = 1000.0  # Items above this price require quotation
+PROFIT_MARGIN = float(os.getenv("PROFIT_MARGIN", "1.5"))  # Multiplier for profit (1.5 = 50% margin)
 
 # --- SharePoint Config ---
 SHAREPOINT_SITE_URL = os.getenv("SHAREPOINT_SITE_URL", "https://gulfcraft.sharepoint.com/sites/costing")
@@ -22,11 +23,17 @@ D365_CLIENT_ID = os.getenv("D365_CLIENT_ID", "mock_d365_client_id")
 D365_CLIENT_SECRET = os.getenv("D365_CLIENT_SECRET", "mock_d365_client_secret")
 
 # --- Email Config ---
-# SMTP config
+# SMTP config (for sending)
 SMTP_SERVER = os.getenv("SMTP_SERVER", "smtp.office365.com")
 SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
 SMTP_EMAIL = os.getenv("SMTP_EMAIL", "")
 SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")
+
+# IMAP config (for receiving/polling)
+IMAP_SERVER = os.getenv("IMAP_SERVER", "outlook.office365.com")
+IMAP_PORT = int(os.getenv("IMAP_PORT", "993"))
+IMAP_EMAIL = os.getenv("IMAP_EMAIL", os.getenv("SMTP_EMAIL", ""))
+IMAP_PASSWORD = os.getenv("IMAP_PASSWORD", os.getenv("SMTP_PASSWORD", ""))
 
 # Microsoft Graph API OAuth2 Config
 MS_GRAPH_TENANT_ID = os.getenv("MS_GRAPH_TENANT_ID", os.getenv("D365_TENANT_ID", ""))
@@ -61,7 +68,7 @@ LANGFUSE_PUBLIC_KEY = os.getenv("LANGFUSE_PUBLIC_KEY")
 LANGFUSE_SECRET_KEY = os.getenv("LANGFUSE_SECRET_KEY")
 LANGFUSE_HOST = os.getenv("LANGFUSE_HOST", "https://cloud.langfuse.com")
 
-# --- Mistral OCR ---
+# --- Mistral API ---
 MISTRAL_API_KEY = os.getenv("MISTRAL_API_KEY")
 
 # --- Email Monitor ---

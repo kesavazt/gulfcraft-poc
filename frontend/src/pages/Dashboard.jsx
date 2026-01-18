@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { sendMessage, getRequests, getUser } from '../api';
-import { LogOut, Send, MessageSquare, List, RefreshCw, User, Search, FileText, CheckCircle, Clock, DollarSign, Menu } from 'lucide-react';
+import { sendMessage, getRequests, getUser, downloadFile } from '../api';
+import { LogOut, Send, MessageSquare, List, RefreshCw, User, Search, FileText, CheckCircle, Clock, DollarSign, Menu, Download } from 'lucide-react';
 
 export default function Dashboard() {
     const [activeTab, setActiveTab] = useState('chat');
@@ -54,8 +54,14 @@ export default function Dashboard() {
         try {
             const data = await sendMessage(input, conversationId);
             setConversationId(data.conversation_id);
-            const aiMsg = { sender: 'ai', content: data.response };
+            const aiMsg = { sender: 'ai', content: data.response, download_url: data.download_url };
             setMessages(prev => [...prev, aiMsg]);
+
+            // Auto-download costing sheet if available
+            if (data.download_url) {
+                console.log("Costing sheet available, triggering download:", data.download_url);
+                downloadFile(data.download_url);
+            }
         } catch (error) {
             console.error("Failed to send message", error);
         } finally {
@@ -193,6 +199,16 @@ export default function Dashboard() {
                                                         return word + ' ';
                                                     })}
                                                 </div>
+                                                {/* Download button for messages with costing sheet */}
+                                                {msg.download_url && (
+                                                    <button
+                                                        onClick={() => downloadFile(msg.download_url)}
+                                                        className="mt-3 flex items-center gap-2 px-4 py-2 bg-brand-600 text-white text-sm font-medium rounded-lg hover:bg-brand-700 transition-all shadow-sm"
+                                                    >
+                                                        <Download className="h-4 w-4" />
+                                                        Download Costing Sheet
+                                                    </button>
+                                                )}
                                             </div>
                                         </div>
                                     ))}
@@ -256,12 +272,13 @@ export default function Dashboard() {
                                                     <th className="px-6 py-4 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Status</th>
                                                     <th className="px-6 py-4 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Price</th>
                                                     <th className="px-6 py-4 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Date</th>
+                                                    <th className="px-6 py-4 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Download</th>
                                                 </tr>
                                             </thead>
                                             <tbody className="divide-y divide-gray-200">
                                                 {requests.length === 0 ? (
                                                     <tr>
-                                                        <td colSpan="5" className="px-6 py-12 text-center">
+                                                        <td colSpan="6" className="px-6 py-12 text-center">
                                                             <div className="flex flex-col items-center justify-center text-gray-400">
                                                                 <FileText className="h-12 w-12 mb-3 opacity-20" />
                                                                 <p>No requests found.</p>
@@ -283,11 +300,11 @@ export default function Dashboard() {
                                                             </td>
                                                             <td className="px-6 py-4 whitespace-nowrap">
                                                                 <span className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium ${req.status === 'Completed' ? 'bg-green-50 text-green-700 border border-green-200' :
-                                                                    req.status === 'Pending' ? 'bg-yellow-50 text-yellow-700 border border-yellow-200' :
+                                                                    req.status === 'Awaiting Quote' ? 'bg-yellow-50 text-yellow-700 border border-yellow-200' :
                                                                         'bg-brand-50 text-brand-700 border border-brand-200'
                                                                     }`}>
                                                                     {req.status === 'Completed' && <CheckCircle className="h-3 w-3" />}
-                                                                    {req.status === 'Pending' && <Clock className="h-3 w-3" />}
+                                                                    {req.status === 'Awaiting Quote' && <Clock className="h-3 w-3" />}
                                                                     {req.status}
                                                                 </span>
                                                             </td>
@@ -303,6 +320,16 @@ export default function Dashboard() {
                                                             </td>
                                                             <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
                                                                 {new Date(req.created_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}
+                                                            </td>
+                                                            <td className="px-6 py-4 whitespace-nowrap">
+                                                                <button
+                                                                    onClick={() => downloadFile(`/costing-sheets/by-job/${req.job_id}`)}
+                                                                    className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-brand-700 bg-brand-50 hover:bg-brand-100 rounded-lg border border-brand-200 transition-all"
+                                                                    title="Download Costing Sheet"
+                                                                >
+                                                                    <Download className="h-3.5 w-3.5" />
+                                                                    Download
+                                                                </button>
                                                             </td>
                                                         </tr>
                                                     ))

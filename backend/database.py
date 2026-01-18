@@ -99,7 +99,7 @@ class CostingRequest(Base):
     job_id = Column(String, unique=True, index=True)
     quotation_id = Column(String, nullable=True)  # Selected quotation ID
     line_num = Column(Integer, nullable=True)  # Selected line number
-    status = Column(String, default="Pending")  # Pending, Awaiting Quotes, Completed
+    status = Column(String, default="Completed")  # Awaiting Quote, Completed
     item_details = Column(Text)
     price = Column(Float, nullable=True)
     sharepoint_url = Column(String, nullable=True)

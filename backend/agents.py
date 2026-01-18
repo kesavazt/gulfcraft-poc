@@ -28,13 +28,16 @@ system_prompt = (
     "\n\n"
     "Logic:"
     "\n1. If the user input is casual (e.g., 'hello', 'how are you', 'hi'), respond with a friendly greeting and respond with FINISH"
-    "\n2. If the user wants to create a job or is requesting a quotation, route to 'SearchAgent'. Only route if the information is complete. The user query must have a job_description and boat_model (e.g MAJESTY62, MAJESTY100, etc)"
+    "\n2. If the user wants to create a NEW job or is requesting a NEW quotation (mentions job description and boat model), ALWAYS route to 'SearchAgent'. This applies even if a previous quotation was generated in the conversation."
     "\n3. If the user is selecting a quotation (providing quotation_id:line_num like 'AJMFQ-000001:1'), route to 'SelectionAgent'"
     "\n4. If the user asks to see more quotations, route to 'SearchAgent'"
-    "\n5. If a quotation has been selected and we need to generate costing, route to 'CostingAgent'"
+    "\n5. NEVER route directly to 'CostingAgent' - it is only called after SelectionAgent confirms a selection"
+    "\n\nIMPORTANT: Each new quotation request with a job description should start fresh with SearchAgent, regardless of conversation history."
 )
 
-options = ["FINISH"] + members
+# CostingAgent is not directly routable from Supervisor - it's called from SelectionAgent
+routable_members = ["SearchAgent", "SelectionAgent"]
+options = ["FINISH"] + routable_members
 function_def = {
     "name": "route",
     "description": "Select the next role.",
@@ -67,7 +70,7 @@ prompt = ChatPromptTemplate.from_messages(
             " Or should we FINISH? Select one of: {options}",
         ),
     ]
-).partial(options=str(options), members=", ".join(members))
+).partial(options=str(options), members=", ".join(routable_members))
 
 supervisor_chain = (
     prompt
@@ -111,7 +114,8 @@ def search_node(state: AgentState):
 
         return {
             "messages": [AIMessage(content=result_content)],
-            "current_top_k": new_top_k
+            "current_top_k": new_top_k,
+            "selected_quotation": None  # Clear previous selection when showing more
         }
     else:
         # Extract description and boat model using LLM for new search
@@ -143,7 +147,11 @@ leaking, plumbing etc from the description if there are any.
             "messages": [result],
             "last_search_description": new_description,
             "last_search_boat_model": new_boat_model,
-            "current_top_k": config.TOP_K_ITEMS
+            "current_top_k": config.TOP_K_ITEMS,
+            "selected_quotation": None,  # Clear previous selection for new search
+            "job_id": None,  # Clear previous job
+            "generated_file": None,  # Clear previous file
+            "awaiting_selection": False  # Reset selection state
         }
 
 

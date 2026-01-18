@@ -1,12 +1,15 @@
 from fastapi import FastAPI, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 from datetime import timedelta, datetime
 from typing import List, Optional
 from pydantic import BaseModel, ConfigDict
 from jose import JWTError, jwt
 import bcrypt
+import os
+import glob as glob_module
 import config
 from database import SessionLocal, User, Conversation, Message, CostingRequest, init_db
 from main import invoke_agent
@@ -82,13 +85,15 @@ class ChatResponse(BaseModel):
     response: str
     conversation_id: int
     state: Optional[dict] = None
+    download_url: Optional[str] = None  # URL to download generated costing sheet
 
 class RequestStatus(BaseModel):
     job_id: str
     item_details: str
     status: str
     price: Optional[float] = None
-    
+    created_at: Optional[datetime] = None
+
     model_config = ConfigDict(from_attributes=True)
 
 # ...
@@ -162,10 +167,18 @@ def chat(request: ChatRequest, current_user: User = Depends(get_current_user), d
     db.add(ai_msg)
     db.commit()
 
+    # Check if a costing sheet was generated and build download URL
+    download_url = None
+    generated_file = result["state"].get("generated_file")
+    if generated_file and os.path.exists(generated_file):
+        filename = os.path.basename(generated_file)
+        download_url = f"/costing-sheets/{filename}"
+
     return {
         "response": result["response"],
         "conversation_id": conversation.id,
-        "state": result["state"]
+        "state": result["state"],
+        "download_url": download_url
     }
 
 @app.get("/chat/history/{conversation_id}")
@@ -183,10 +196,6 @@ def get_requests(current_user: User = Depends(get_current_user), db: Session = D
     else:
         requests = db.query(CostingRequest).filter(CostingRequest.user_id == current_user.id).all()
     return requests
-
-from fastapi.responses import FileResponse
-import os
-import glob as glob_module
 
 # --- Costing Sheet Downloads ---
 
@@ -211,6 +220,27 @@ def list_costing_sheets(current_user: User = Depends(get_current_user)):
     # Sort by creation time, newest first
     sheets.sort(key=lambda x: x["created"], reverse=True)
     return {"sheets": sheets}
+
+
+@app.get("/costing-sheets/by-job/{job_id}")
+def download_costing_sheet_by_job(job_id: str, current_user: User = Depends(get_current_user)):
+    """Download a costing sheet by job ID."""
+    # Prevent directory traversal
+    if ".." in job_id or "/" in job_id or "\\" in job_id:
+        raise HTTPException(status_code=400, detail="Invalid job ID")
+
+    # The filename pattern is costing_{job_id}.xlsx
+    filename = f"costing_{job_id}.xlsx"
+    file_path = os.path.join("temp_downloads", filename)
+
+    if not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail=f"Costing sheet for job {job_id} not found")
+
+    return FileResponse(
+        file_path,
+        filename=filename,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
 
 
 @app.get("/costing-sheets/{filename}")
