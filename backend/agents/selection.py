@@ -1,0 +1,147 @@
+"""
+Selection Agent Node
+
+Handles user's quotation selection and confirmation workflow.
+"""
+
+import re
+from langchain_core.messages import AIMessage
+from core.state import AgentState
+from utils.llm import llm
+from utils.prompts import SELECTION_EXTRACTION_PROMPT, QUOTATION_CONFIRMATION_TEMPLATE
+from utils import tools
+
+
+
+
+def _check_confirmation(user_message: str, state: AgentState):
+    """Check if user is responding to a confirmation prompt."""
+    if not state.get("selected_quotation"):
+        return None
+    
+    msg = user_message.lower()
+    if any(w in msg for w in ["yes", "y", "confirm", "proceed", "go ahead"]):
+        return {
+            "messages": [AIMessage(content="Proceeding to create costing job...")],
+            "next": "CostingAgent"
+        }
+    elif any(w in msg for w in ["no", "n", "cancel", "stop"]):
+        return {
+            "messages": [AIMessage(content="Cancelled. Would you like to see other options or start a new search?")],
+            "selected_quotation": None,
+            "next": "__end__"
+        }
+    return None
+
+
+def _try_number_selection(user_message: str, similar_quotations: list):
+    """Try to match a simple number selection (1-10)."""
+    number_match = re.search(r'^\s*(\d+)\s*$', user_message)
+    if number_match:
+        try:
+            index = int(number_match.group(1)) - 1
+            if similar_quotations and 0 <= index < len(similar_quotations):
+                return similar_quotations[index]
+        except ValueError:
+            pass
+    return None
+
+
+def _try_id_selection(user_message: str, similar_quotations: list):
+    """Try to match quotation_id:line_num format."""
+    selection_match = re.search(r'(AJMFQ-\d+):(\d+)', user_message, re.IGNORECASE)
+    if not selection_match:
+        return None
+    
+    quotation_id = selection_match.group(1).upper()
+    line_num = int(selection_match.group(2))
+
+    # First check in similar_quotations
+    if similar_quotations:
+        for q in similar_quotations:
+            if q.get("quotation_id") == quotation_id and q.get("line_num") == line_num:
+                return q
+
+    # Fallback to DB lookup
+    return tools.get_quotation_by_id(quotation_id, line_num)
+
+
+def _try_llm_extraction(user_message: str, similar_quotations: list):
+    """Use LLM to extract selection from ambiguous input."""
+    options_context = ""
+    if similar_quotations:
+        options_context = "Available options:\n"
+        for idx, q in enumerate(similar_quotations):
+            options_context += f"{idx+1}. ID: {q.get('quotation_id')}:{q.get('line_num')} - {q.get('description')}\n"
+    
+    extraction_prompt = [
+        ("system", SELECTION_EXTRACTION_PROMPT.format(
+            user_message=user_message,
+            options_context=options_context
+        ))
+    ]
+    result = llm.invoke(extraction_prompt)
+    content = result.content.strip()
+
+    if not content or content == "NOT_FOUND":
+        return None
+
+    llm_match = re.search(r'(AJMFQ-\d+):(\d+)', content, re.IGNORECASE)
+    if not llm_match:
+        return None
+    
+    quotation_id = llm_match.group(1).upper()
+    line_num = int(llm_match.group(2))
+    
+    # Check options first
+    if similar_quotations:
+        for q in similar_quotations:
+            if q.get("quotation_id") == quotation_id and q.get("line_num") == line_num:
+                return q
+    
+    return tools.get_quotation_by_id(quotation_id, line_num)
+
+
+def selection_node(state: AgentState):
+    """
+    Handles user's quotation selection and extracts quotation details.
+    
+    Supports:
+    - Confirmation responses (Yes/No)
+    - Number selection (1, 2, 3...)
+    - ID selection (AJMFQ-000001:1)
+    - Natural language description matching
+    """
+    user_message = state["messages"][-1].content
+    similar_quotations = state.get("similar_quotations", [])
+    
+    # Check for pending confirmation first
+    confirmation_result = _check_confirmation(user_message, state)
+    if confirmation_result:
+        return confirmation_result
+    
+    # Try selection methods in order of specificity
+    selected = None
+    selected = selected or _try_number_selection(user_message, similar_quotations)
+    selected = selected or _try_id_selection(user_message, similar_quotations)
+    selected = selected or _try_llm_extraction(user_message, similar_quotations)
+
+    if selected:
+        confirmation_msg = f"""I've selected quotation **{selected.get('quotation_id')}** (Line {selected.get('line_num')}):
+- Description: {selected.get('description')}
+- Boat Model: {selected.get('boat_model') or selected.get('afz_boat_model_id')}
+
+Do you want to create a costing job for this quotation? (Yes/No)"""
+
+        return {
+            "messages": [AIMessage(content=confirmation_msg)],
+            "selected_quotation": selected,
+            "awaiting_selection": False,
+            "next": "__end__"
+        }
+    else:
+        return {
+            "messages": [AIMessage(content="I couldn't identify your selection. Please select one of the options by number (e.g., '1') or provide the Quotation ID.")],
+            "awaiting_selection": True,
+            "next": "__end__"
+        }

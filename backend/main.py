@@ -1,12 +1,12 @@
 from langgraph.graph import StateGraph, END
 from langgraph.prebuilt import ToolNode
-from state import AgentState
+from core.state import AgentState
 from agents import (
     supervisor_node, search_node, refinement_node,
     selection_node, costing_node
 )
-from tools import search_similar_quotations
-from database import init_db
+from utils.tools import search_similar_quotations
+from core.database import init_db
 
 # --- Graph Construction ---
 workflow = StateGraph(AgentState)
@@ -23,10 +23,17 @@ workflow.add_node("CostingAgent", costing_node)
 # Set entry point
 workflow.set_entry_point("Supervisor")
 
+
+# --- Routing Functions ---
+def supervisor_router(state: AgentState) -> str:
+    """Route from Supervisor to the next agent based on state."""
+    return state.get("next", "FINISH")
+
+
 # Supervisor routing (CostingAgent is not directly routable - only via SelectionAgent)
 workflow.add_conditional_edges(
     "Supervisor",
-    lambda x: x["next"],
+    supervisor_router,
     {
         "SearchAgent": "SearchAgent",
         "SelectionAgent": "SelectionAgent",
@@ -145,7 +152,8 @@ def invoke_agent(message: str, user_id: int = 1, threshold: float = 1000.0, conv
             "sharepoint_url": final_state.get("sharepoint_url"),
             "last_search_description": final_state.get("last_search_description"),
             "last_search_boat_model": final_state.get("last_search_boat_model"),
-            "current_top_k": final_state.get("current_top_k")
+            "current_top_k": final_state.get("current_top_k"),
+            "similar_quotations": final_state.get("similar_quotations")
         }
     }
 
