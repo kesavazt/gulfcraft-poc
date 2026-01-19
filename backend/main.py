@@ -129,6 +129,13 @@ def invoke_agent(message: str, user_id: int = 1, threshold: float = 1000.0, conv
             inputs["last_search_boat_model"] = session_state["last_search_boat_model"]
         if session_state.get("current_top_k"):
             inputs["current_top_k"] = session_state["current_top_k"]
+        if session_state.get("selected_quotation"):
+            inputs["selected_quotation"] = session_state["selected_quotation"]
+        if session_state.get("similar_quotations"):
+            inputs["similar_quotations"] = session_state["similar_quotations"]
+        if session_state.get("awaiting_selection") is not None:
+            inputs["awaiting_selection"] = session_state["awaiting_selection"]
+
 
     response_messages = []
     final_state = {}
@@ -138,7 +145,7 @@ def invoke_agent(message: str, user_id: int = 1, threshold: float = 1000.0, conv
             final_state.update(value)
             if 'messages' in value:
                 for msg in value["messages"]:
-                    if hasattr(msg, 'content') and msg.content:
+                    if isinstance(msg, AIMessage) and msg.content:
                         response_messages.append(msg.content)
 
     return {
@@ -153,8 +160,10 @@ def invoke_agent(message: str, user_id: int = 1, threshold: float = 1000.0, conv
             "last_search_description": final_state.get("last_search_description"),
             "last_search_boat_model": final_state.get("last_search_boat_model"),
             "current_top_k": final_state.get("current_top_k"),
-            "similar_quotations": final_state.get("similar_quotations")
+            "similar_quotations": final_state.get("similar_quotations"),
+            "selected_quotation": final_state.get("selected_quotation")
         }
+
     }
 
 

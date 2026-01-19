@@ -12,9 +12,9 @@ SHAREPOINT_SITE_URL = os.getenv("SHAREPOINT_SITE_URL", "https://gulfcraft.sharep
 SHAREPOINT_TENANT_ID = os.getenv("SHAREPOINT_TENANT_ID", os.getenv("MS_GRAPH_TENANT_ID", ""))
 SHAREPOINT_CLIENT_ID = os.getenv("SHAREPOINT_CLIENT_ID", os.getenv("MS_GRAPH_CLIENT_ID", ""))
 SHAREPOINT_CLIENT_SECRET = os.getenv("SHAREPOINT_CLIENT_SECRET", os.getenv("MS_GRAPH_CLIENT_SECRET", ""))
-SHAREPOINT_LIST_NAME = os.getenv("SHAREPOINT_LIST_NAME", "CostingJobs")
+SHAREPOINT_LIST_NAME = os.getenv("SP_LIST_ID", os.getenv("SHAREPOINT_LIST_NAME", "CostingJobs"))
 SHAREPOINT_DRIVE_NAME = os.getenv("SHAREPOINT_DRIVE_NAME", "Documents")
-SHAREPOINT_SITE_ID = os.getenv("SHAREPOINT_SITE_ID", "")  # Optional: direct site ID if Sites.Selected permission
+SHAREPOINT_SITE_ID = os.getenv("SP_SITE_ID", os.getenv("SHAREPOINT_SITE_ID", ""))
 
 # --- D365 Config (Mock) ---
 D365_API_URL = os.getenv("D365_API_URL", "https://gulfcraft.operations.dynamics.com")

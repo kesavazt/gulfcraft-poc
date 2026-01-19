@@ -31,58 +31,55 @@ def hybrid_search(query: str,boat_model: str, top_k: int = config.TOP_K_ITEMS) -
         # Note: This assumes the vector extension is enabled and the column is set up
         # For SQLite dev, this might fail if not handled, so we'll add a fallback or mock
         
-        if "sqlite" in config.DATABASE_URL:
-            # Mock search for SQLite
-            results = []
-            #results = session.query(QuotationLines).filter(Product.name.ilike(f"%{query}%")).limit(top_k).all()
-        else:
-            # Postgres Vector Search
-            #results = session.query(Product).order_by(
-            #    Product.embedding.cosine_distance(query_vec)
-            #).limit(top_k).all()
-            # Full Hybrid Search
-            semantic = (
-                session.query(
-                    QuotationLines.id,
-                    (1 - QuotationLines.embedding.cosine_distance(query_vec)).label("semantic_score")
+        # Normalize boat model for matching (remove spaces, uppercase)
+        normalized_boat_model = boat_model.replace(" ", "").upper()
+        print(f"DEBUG: hybrid_search called with query='{query}', boat_model='{boat_model}' (normalized='{normalized_boat_model}')")
+        
+        # Postgres Vector Search
+        #results = session.query(Product).order_by(
+        #    Product.embedding.cosine_distance(query_vec)
+        #).limit(top_k).all()
+        # Full Hybrid Search
+        semantic = (
+            session.query(
+                QuotationLines.id,
+                (1 - QuotationLines.embedding.cosine_distance(query_vec)).label("semantic_score")
+            )
+        .filter(func.replace(QuotationLines.afz_boat_model_id, ' ', '') == normalized_boat_model)
+        .order_by(QuotationLines.embedding.cosine_distance(query_vec))
+        .subquery()
+        )
+
+
+        results = (
+            session.query(
+            QuotationLines,
+            (
+                0.7 * semantic.c.semantic_score +
+                0.3 * func.coalesce(
+                    func.ts_rank(
+                        QuotationLines.tsv,
+                        func.plainto_tsquery("english", query)
+                    ),
+                    0
                 )
-            .filter(QuotationLines.afz_boat_model_id == boat_model)
-            .order_by(QuotationLines.embedding.cosine_distance(query_vec))
-            .subquery()
-            )
-
-
-            results = (
-                session.query(
-                QuotationLines,
-                (
-                    0.7 * semantic.c.semantic_score +
-                    0.3 * func.coalesce(
-                        func.ts_rank(
-                            QuotationLines.tsv,
-                            func.plainto_tsquery("english", query)
-                        ),
-                        0
-                    )
-                ).label("score")
-            )
-            .join(semantic, QuotationLines.id == semantic.c.id)
-            .order_by(desc("score"))
-            .limit(top_k)
-            .all()
-            )
+            ).label("score")
+        )
+        .join(semantic, QuotationLines.id == semantic.c.id)
+        .order_by(desc("score"))
+        .limit(top_k)
+        .all()
+        )
 
         # Returns QuotationID
         return [
             {
-                "id": p[0].quotation_id,
-                #"d365_id": p[0].d365_id,
-                #"name": p[0].name,
+                "id": p[0].id,
+                "quotation_id": p[0].quotation_id,
                 "description": p[0].description,
                 "boat_model": p[0].afz_boat_model_id,
                 "price": p[0].sales_price,
                 "line_num": p[0].line_num
-                #"price": p[0].price
             }
             for p in results
         ]

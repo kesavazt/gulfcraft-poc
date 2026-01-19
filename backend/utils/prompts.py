@@ -26,9 +26,13 @@ IMPORTANT: Each new quotation request with a job description should start fresh 
 # SEARCH PROMPTS
 # =============================================================================
 
-SEARCH_EXTRACTION_PROMPT = """The user has asked the following query: {user_query}
+SEARCH_EXTRACTION_PROMPT = """Based on the conversation history, the user wants to search for a quotation.
+Extract the following information to use with the tool:
 
-The user wants a job done. He has provided a description and boat model. Extract the description and boat model and use the search_similar_quotations tool to get a list of similar quotations. When extracting description, don't miss important keywords like fitting, leaking, plumbing etc from the description if there are any."""
+1. **job_description**: A concise description of the maintenance or repair task. IMPORTANT: Remove any boat names or models (like 'MAJESTY62', 'Majesty 120') from this description. Keep keywords like 'fitting', 'leaking', 'polishing', 'cleaning', etc.
+2. **boat_model**: The boat model identified from the conversation.
+
+If the user provided information across multiple messages, combine them to extract the correct parameters."""
 
 
 REFINEMENT_PROMPT = """I have found {count} similar quotations.

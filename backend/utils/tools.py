@@ -20,42 +20,56 @@ from langchain.tools import tool
 import requests
 
 
-# --- SMTP Email (Gmail) ---
-# Gmail SMTP settings
+# --- SMTP Email Services ---
 GMAIL_SMTP_SERVER = "smtp.gmail.com"
 GMAIL_SMTP_PORT = 587
+MS_SMTP_SERVER = "smtp.office365.com"
+MS_SMTP_PORT = 587
 
-def send_email(to: str, subject: str, body: str) -> bool:
+def send_email(to: str, subject: str, body: str, service: str = "microsoft") -> bool:
     """
-    Send an email using Gmail SMTP.
+    Send an email using configured SMTP services.
 
     Args:
         to: Recipient email address
         subject: Email subject
         body: Email body text
+        service: "microsoft" or "gmail"
 
     Returns:
         True if email sent successfully, False otherwise
     """
     msg = EmailMessage()
-    msg["From"] = config.SMTP_EMAIL
+    
+    # Configure server and credentials based on service
+    if service.lower() == "microsoft":
+        server_addr = MS_SMTP_SERVER
+        server_port = MS_SMTP_PORT
+        sender_email = config.MS_GRAPH_SENDER_EMAIL or config.SMTP_EMAIL
+        password = config.SMTP_PASSWORD
+    else:  # Default to gmail
+        server_addr = GMAIL_SMTP_SERVER
+        server_port = GMAIL_SMTP_PORT
+        sender_email = config.SMTP_EMAIL
+        # Use Gmail App Password if available
+        password = os.getenv("GMAIL_APP_PASSWORD", "").strip('"') or config.SMTP_PASSWORD
+
+    msg["From"] = sender_email
     msg["To"] = to
     msg["Subject"] = subject
     msg.set_content(body)
 
-    # Use Gmail App Password if available, otherwise fall back to SMTP_PASSWORD
-    smtp_password = os.getenv("GMAIL_APP_PASSWORD", "").strip('"') or config.SMTP_PASSWORD
-
     try:
-        server = smtplib.SMTP(GMAIL_SMTP_SERVER, GMAIL_SMTP_PORT)
+        print(f"[SMTP] Connecting to {service} server ({server_addr})...")
+        server = smtplib.SMTP(server_addr, server_port)
         server.starttls()
-        server.login(config.SMTP_EMAIL, smtp_password)
+        server.login(sender_email, password)
         server.send_message(msg)
         server.quit()
-        print(f"[SMTP] Email sent to {to}")
+        print(f"[SMTP] Email successfully sent to {to} via {service}")
         return True
     except Exception as e:
-        print(f"[SMTP] Error: {e}")
+        print(f"[SMTP] Error sending via {service}: {e}")
         return False
 
 
@@ -122,10 +136,10 @@ def create_sharepoint_list_item(
     
     payload = {
         "fields": {
-            "Title": title,
-            "Job ID": job_id,
-            "Price": price,
-            "Status": status
+            "Title": str(title),
+            "JobID": str(job_id),
+            "Price": str(price),
+            "Status": str(status)
         }
     }
     
@@ -454,10 +468,6 @@ def send_price_request_email(
     Sends an email to the vendor requesting a price quotation for an item.
     Stores the pending request in the database for tracking.
     """
-    # Override vendor email for testing - send all emails to test recipient
-    test_email = "shehryarshahid49@gmail.com"
-    actual_recipient = test_email  # Change to vendor_email for production
-
     subject = f"Price Quotation Request - {job_id} - {item_name}"
     body = f"""Dear Vendor,
 
@@ -476,16 +486,13 @@ for automated processing.
 
 Best regards,
 Gulf Craft Costing Team
-
----
-[DEBUG] Original vendor email: {vendor_email}
 """
 
-    # Send the email using Microsoft Graph API
-    email_sent = send_email(actual_recipient, subject, body)
+    # Send the email using configured SMTP service (defaulting to microsoft as per GC requirement)
+    email_sent = send_email(vendor_email, subject, body, service="microsoft")
 
     if not email_sent:
-        print(f"[Email] Failed to send email to {actual_recipient}")
+        print(f"[Email] Failed to send email to {vendor_email}")
         return False
 
     # Store the pending request
@@ -723,7 +730,7 @@ def get_quotation_by_id(quotation_id: str, line_num: int = None) -> Optional[Dic
                 "line_num": quotation.line_num,
                 "description": quotation.description,
                 "boat_model": quotation.afz_boat_model_id,
-                "sales_price": quotation.sales_price
+                "price": quotation.sales_price
             }
         return None
     except Exception as e:

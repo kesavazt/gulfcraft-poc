@@ -129,11 +129,8 @@ def _build_response(job_id: str, quotation_id: str, line_num: int,
         for item in pending_items:
             response_parts.append(f"  - {item['item_name']} (email sent to {item['vendor_email']})")
 
-    if file_path:
-        response_parts.append(f"\n**Costing Sheet:** {file_path}")
-
-    if sharepoint_url:
-        response_parts.append(f"**SharePoint URL:** {sharepoint_url}")
+    # Removed links from response as per user request to keep chat clean.
+    # The frontend still receives file_path and sharepoint_url in the state.
 
     if pending_items:
         response_parts.append("\nI've sent price quotation requests to the vendors. The system will monitor for incoming responses and update the costing sheet automatically.")

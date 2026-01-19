@@ -127,9 +127,30 @@ def selection_node(state: AgentState):
     selected = selected or _try_llm_extraction(user_message, similar_quotations)
 
     if selected:
-        confirmation_msg = f"""I've selected quotation **{selected.get('quotation_id')}** (Line {selected.get('line_num')}):
-- Description: {selected.get('description')}
-- Boat Model: {selected.get('boat_model') or selected.get('afz_boat_model_id')}
+        # Fetch detailed estimation lines for the selected quotation
+        quotation_id = selected.get('quotation_id')
+        line_num = selected.get('line_num')
+        estimation_lines = tools.get_estimation_lines(quotation_id, line_num)
+        
+        details_text = ""
+        total_price = selected.get('price', 0) or selected.get('sales_price', 0)
+        
+        if estimation_lines:
+            details_text = "\n\n**Included Items:**\n\n"
+            details_text += "| Item Description | Quantity | Price (AED) |\n"
+            details_text += "| :--- | :---: | ---: |\n"
+            for item in estimation_lines:
+                qty = item.get('quantity', 1)
+                uom = item.get('uom', 'EA')
+                price = item.get('sales_price', 0)
+                desc = item.get('item_name', 'N/A')
+                details_text += f"| {desc} | {qty} {uom} | {price:,.2f} |\n"
+
+        
+        confirmation_msg = f"""I've selected quotation **{quotation_id}** (Line {line_num}):
+- **Description:** {selected.get('description')}
+- **Boat Model:** {selected.get('boat_model') or selected.get('afz_boat_model_id')}
+- **Total Price:** {total_price:,.2f} AED{details_text}
 
 Do you want to create a costing job for this quotation? (Yes/No)"""
 
@@ -137,7 +158,7 @@ Do you want to create a costing job for this quotation? (Yes/No)"""
             "messages": [AIMessage(content=confirmation_msg)],
             "selected_quotation": selected,
             "awaiting_selection": False,
-            "next": "__end__"
+            "next": "FINISH" # Wait for user confirmation
         }
     else:
         return {

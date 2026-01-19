@@ -1,7 +1,6 @@
 from pydantic import PositiveInt
 from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, ForeignKey, Text, Boolean
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker, relationship
+from sqlalchemy.orm import sessionmaker, relationship, declarative_base
 from sqlalchemy.sql import func
 from pgvector.sqlalchemy import Vector
 from sqlalchemy.dialects.postgresql import TSVECTOR

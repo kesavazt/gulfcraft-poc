@@ -80,6 +80,8 @@ class UserCreate(BaseModel):
 class ChatRequest(BaseModel):
     message: str
     conversation_id: Optional[int] = None
+    state: Optional[dict] = None
+
 
 class ChatResponse(BaseModel):
     response: str
@@ -154,13 +156,15 @@ def chat(request: ChatRequest, current_user: User = Depends(get_current_user), d
             "content": msg.content
         })
 
-    # Invoke Agent with conversation history
+    # Invoke Agent with conversation history and previous state
     result = invoke_agent(
         message=request.message,
         user_id=current_user.id,
         threshold=config.PRICE_THRESHOLD,
-        conversation_history=conversation_history
+        conversation_history=conversation_history,
+        session_state=request.state
     )
+
 
     # Save AI Message
     ai_msg = Message(conversation_id=conversation.id, content=result["response"], sender="ai")

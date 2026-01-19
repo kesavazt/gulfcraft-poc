@@ -4,7 +4,7 @@ Search and Refinement Agent Nodes
 Handles searching for similar quotations and presenting results to the user.
 """
 
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, ToolMessage
 from core.state import AgentState
 from utils.llm import llm
 from utils.prompts import SEARCH_EXTRACTION_PROMPT, REFINEMENT_PROMPT
@@ -36,16 +36,28 @@ def search_node(state: AgentState):
         new_top_k = current_top_k + 5
         search_results = tools.search_similar_quotations(last_description, last_boat_model, top_k=new_top_k)
 
-        result_content = str(search_results) if search_results else "No additional quotations found."
+        # Convert list to string for ToolMessage
+        result_content = json.dumps(search_results) if search_results else "[]"
+
+        # Use ToolMessage to keep JSON results technical and hidden from final response
+        msg = ToolMessage(
+            content=result_content,
+            tool_call_id="show_more_search"
+        )
 
         return {
-            "messages": [AIMessage(content=result_content)],
+            "messages": [msg],
             "current_top_k": new_top_k,
             "selected_quotation": None
         }
     else:
         # Extract description and boat model using LLM for new search
-        extraction_prompt = [("system", SEARCH_EXTRACTION_PROMPT.format(user_query=user_query))]
+        # Pass conversation history for context
+        messages = state["messages"]
+        extraction_prompt = [
+            ("system", SEARCH_EXTRACTION_PROMPT),
+        ] + messages
+        
         llm_with_tools = llm.bind_tools([tools.search_similar_quotations])
         result = llm_with_tools.invoke(extraction_prompt)
 
