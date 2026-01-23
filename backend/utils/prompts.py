@@ -17,7 +17,8 @@ Logic:
 4. If the user is selecting a quotation (providing quotation_id:line_num like 'AJMFQ-000001:1'), route to 'SelectionAgent'
 5. If the user is responding 'Yes' or 'No' to a confirmation question about creating a costing job, route to 'SelectionAgent'.
 6. If the user asks to see more quotations, route to 'SearchAgent'
-7. NEVER route directly to 'CostingAgent' - it is only called after SelectionAgent confirms a selection
+7. If the user asks for job status, pending products, or available products, route to 'StatusAgent'
+8. NEVER route directly to 'CostingAgent' - it is only called after SelectionAgent confirms a selection
 
 IMPORTANT: Each new quotation request with a job description should start fresh with SearchAgent, regardless of conversation history."""
 

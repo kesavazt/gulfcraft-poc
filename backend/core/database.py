@@ -120,6 +120,7 @@ class CostingLineItem(Base):
     unit_price = Column(Float, nullable=True)
     price_status = Column(String, default="pending")  # resolved, pending_quote
     vendor_email = Column(String, nullable=True)
+    item_type = Column(String, nullable=True)
     quote_requested_at = Column(DateTime(timezone=True), nullable=True)
     quote_received_at = Column(DateTime(timezone=True), nullable=True)
 

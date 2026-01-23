@@ -11,8 +11,9 @@ import bcrypt
 import os
 import glob as glob_module
 from core import config
-from core.database import SessionLocal, User, Conversation, Message, CostingRequest, init_db
+from core.database import SessionLocal, User, Conversation, Message, CostingRequest, CostingLineItem, init_db
 from main import invoke_agent
+from utils import tools
 
 app = FastAPI()
 
@@ -89,12 +90,49 @@ class ChatResponse(BaseModel):
     state: Optional[dict] = None
     download_url: Optional[str] = None  # URL to download generated costing sheet
 
+class LineItemSchema(BaseModel):
+    id: int
+    item_name: str
+    item_code: Optional[str] = None
+    quantity: int
+    unit_price: Optional[float] = None
+    price_status: str
+    vendor_email: Optional[str] = None
+    item_type: Optional[str] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+class ProductSchema(BaseModel):
+    id: int
+    item_number: str
+    unit_cost: Optional[float] = None
+    vendor_email: Optional[str] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+class LineItemUpdate(BaseModel):
+    item_name: Optional[str] = None
+    item_code: Optional[str] = None
+    quantity: Optional[int] = None
+    unit_price: Optional[float] = None
+    item_type: Optional[str] = None
+
+class LineItemCreate(BaseModel):
+    item_name: str
+    item_code: Optional[str] = None
+    quantity: int = 1
+    unit_price: Optional[float] = None
+    item_type: Optional[str] = "Item"
+    vendor_email: Optional[str] = None
+
 class RequestStatus(BaseModel):
+    id: int
     job_id: str
     item_details: str
     status: str
     price: Optional[float] = None
     created_at: Optional[datetime] = None
+    line_items: List[LineItemSchema] = []
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -201,12 +239,159 @@ def get_requests(current_user: User = Depends(get_current_user), db: Session = D
         requests = db.query(CostingRequest).filter(CostingRequest.user_id == current_user.id).all()
     return requests
 
+@app.get("/products/search", response_model=List[ProductSchema])
+def search_products(q: str, db: Session = Depends(get_db)):
+    if not q:
+        return []
+    products = db.query(Product).filter(Product.item_number.ilike(f"%{q}%")).limit(10).all()
+    return products
+
+@app.post("/requests/{job_id}/items", response_model=LineItemSchema)
+def add_line_item(job_id: str, item: LineItemCreate, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    request = db.query(CostingRequest).filter(CostingRequest.job_id == job_id).first()
+    if not request:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if current_user.role != "admin" and request.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Permission denied")
+
+    new_item = CostingLineItem(
+        costing_request_id=request.id,
+        item_name=item.item_name,
+        item_code=item.item_code,
+        quantity=item.quantity,
+        unit_price=item.unit_price,
+        price_status="resolved" if item.unit_price is not None else "pending",
+        item_type=item.item_type,
+        vendor_email=item.vendor_email
+    )
+    db.add(new_item)
+    db.commit()
+    db.refresh(new_item)
+
+    # Recalculate total price
+    total_price = 0
+    all_items = db.query(CostingLineItem).filter(CostingLineItem.costing_request_id == request.id).all()
+    for it in all_items:
+        if it.unit_price:
+            total_price += (it.unit_price * (it.quantity or 1))
+
+    request.price = total_price
+    db.commit()
+
+    tools.regenerate_costing_sheet(job_id)
+    return new_item
+
+@app.delete("/requests/{job_id}/items/{item_id}")
+def delete_line_item(job_id: str, item_id: int, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    request = db.query(CostingRequest).filter(CostingRequest.job_id == job_id).first()
+    if not request:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if current_user.role != "admin" and request.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Permission denied")
+
+    line_item = db.query(CostingLineItem).filter(CostingLineItem.id == item_id, CostingLineItem.costing_request_id == request.id).first()
+    if not line_item:
+        raise HTTPException(status_code=404, detail="Line item not found")
+
+    db.delete(line_item)
+    db.commit()
+
+    # Recalculate total price
+    total_price = 0
+    all_items = db.query(CostingLineItem).filter(CostingLineItem.costing_request_id == request.id).all()
+    for it in all_items:
+        if it.unit_price:
+            total_price += (it.unit_price * (it.quantity or 1))
+
+    request.price = total_price
+    db.commit()
+
+    tools.regenerate_costing_sheet(job_id)
+    return {"detail": "Item deleted"}
+
+@app.put("/requests/{job_id}/items/{item_id}", response_model=LineItemSchema)
+def update_line_item(job_id: str, item_id: int, item_update: LineItemUpdate, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    # Verify job exists and user has access
+    request = db.query(CostingRequest).filter(CostingRequest.job_id == job_id).first()
+    if not request:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if current_user.role != "admin" and request.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Permission denied")
+
+    line_item = db.query(CostingLineItem).filter(CostingLineItem.id == item_id, CostingLineItem.costing_request_id == request.id).first()
+    if not line_item:
+        raise HTTPException(status_code=404, detail="Line item not found")
+
+    if item_update.unit_price is not None:
+        line_item.unit_price = item_update.unit_price
+        line_item.price_status = "resolved"
+    if item_update.item_name is not None:
+        line_item.item_name = item_update.item_name
+    if item_update.item_code is not None:
+        line_item.item_code = item_update.item_code
+    if item_update.quantity is not None:
+        line_item.quantity = item_update.quantity
+    if item_update.item_type is not None:
+        line_item.item_type = item_update.item_type
+
+    db.commit()
+    db.refresh(line_item)
+
+    # Recalculate total price for the request
+    total_price = 0
+    all_items = db.query(CostingLineItem).filter(CostingLineItem.costing_request_id == request.id).all()
+    for item in all_items:
+        if item.unit_price:
+            total_price += (item.unit_price * (item.quantity or 1))
+
+    request.price = total_price
+    db.commit()
+
+    # Regenerate local file
+    tools.regenerate_costing_sheet(job_id)
+
+    return line_item
+
+@app.post("/requests/{job_id}/approve")
+def approve_job(job_id: str, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    request = db.query(CostingRequest).filter(CostingRequest.job_id == job_id).first()
+    if not request:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if current_user.role != "admin" and request.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Permission denied")
+
+    request.status = "Approved"
+    db.commit()
+
+    # Regenerate sheet and get path
+    file_path = tools.regenerate_costing_sheet(job_id)
+
+    # Calculate total selling price (with margin) for SharePoint
+    total_selling = 0
+    all_items = db.query(CostingLineItem).filter(CostingLineItem.costing_request_id == request.id).all()
+    for item in all_items:
+        if item.unit_price:
+            total_selling += (item.unit_price * (item.quantity or 1) * config.PROFIT_MARGIN)
+
+    # Update SharePoint
+    tools.update_sharepoint_status(job_id, status="Approved", price=round(total_selling, 2))
+
+    # Send Notification Email with Attachment
+    tools.send_costing_ready_notification(
+        job_id=job_id,
+        description=request.item_details or "",
+        sharepoint_url=request.sharepoint_url,
+        attachment_path=file_path
+    )
+
+    return {"status": "Approved", "job_id": job_id}
+
 # --- Costing Sheet Downloads ---
 
 @app.get("/costing-sheets")
 def list_costing_sheets(current_user: User = Depends(get_current_user)):
     """List all available costing sheets."""
-    downloads_dir = "temp_downloads"
+    downloads_dir = config.TEMP_DOWNLOADS_DIR
     if not os.path.exists(downloads_dir):
         return {"sheets": []}
 
@@ -235,7 +420,7 @@ def download_costing_sheet_by_job(job_id: str, current_user: User = Depends(get_
 
     # The filename pattern is costing_{job_id}.xlsx
     filename = f"costing_{job_id}.xlsx"
-    file_path = os.path.join("temp_downloads", filename)
+    file_path = os.path.join(config.TEMP_DOWNLOADS_DIR, filename)
 
     if not os.path.exists(file_path):
         raise HTTPException(status_code=404, detail=f"Costing sheet for job {job_id} not found")
@@ -255,7 +440,7 @@ def download_costing_sheet(filename: str, current_user: User = Depends(get_curre
     if ".." in filename or "/" in filename or "\\" in filename:
         raise HTTPException(status_code=400, detail="Invalid filename")
 
-    file_path = os.path.join("temp_downloads", filename)
+    file_path = os.path.join(config.TEMP_DOWNLOADS_DIR, filename)
     if not os.path.exists(file_path):
         raise HTTPException(status_code=404, detail="Costing sheet not found")
 
@@ -274,7 +459,7 @@ def download_file(filename: str, current_user: User = Depends(get_current_user))
     if ".." in filename or "/" in filename or "\\" in filename:
         raise HTTPException(status_code=400, detail="Invalid filename")
 
-    file_path = os.path.join("temp_downloads", filename)
+    file_path = os.path.join(config.TEMP_DOWNLOADS_DIR, filename)
     if os.path.exists(file_path):
         return FileResponse(
             file_path,

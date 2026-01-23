@@ -15,7 +15,7 @@ from utils import tools
 # --- Supervisor Configuration ---
 
 # CostingAgent is not directly routable from Supervisor - only via SelectionAgent
-ROUTABLE_MEMBERS = ["SearchAgent", "SelectionAgent"]
+ROUTABLE_MEMBERS = ["SearchAgent", "SelectionAgent", "StatusAgent"]
 OPTIONS = ["FINISH"] + ROUTABLE_MEMBERS
 
 ROUTE_FUNCTION_DEF = {

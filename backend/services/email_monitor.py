@@ -458,9 +458,7 @@ class EmailMonitor:
         return None
 
     def _update_prices_from_extraction(self, job_id: str, item_name: str, extracted_data: List[Dict[str, Any]]):
-        """Update database with extracted prices (with profit margin applied)."""
-        # Get profit margin from config
-        profit_margin = config.PROFIT_MARGIN
+        """Update database with extracted unit costs (no profit margin applied)."""
 
         for item in extracted_data:
             extracted_item_name = item.get("item_name", item_name)
@@ -468,20 +466,17 @@ class EmailMonitor:
 
             if cost_price:
                 cost_price = float(cost_price)
-                # Apply profit margin to get selling price
-                selling_price = round(cost_price * profit_margin, 2)
+                print(f"[EmailMonitor] Cost: {cost_price} (no margin applied)")
 
-                print(f"[EmailMonitor] Cost: {cost_price} -> Selling: {selling_price} (margin: {profit_margin}x)")
-
-                # Update the database with selling price (profit margin applied)
+                # Update the database with unit cost only
                 success = mark_quote_received(
                     job_id=job_id,
                     item_name=extracted_item_name,
-                    price=selling_price
+                    price=cost_price
                 )
 
                 if success:
-                    print(f"[EmailMonitor] Updated price for {extracted_item_name}: {selling_price}")
+                    print(f"[EmailMonitor] Updated price for {extracted_item_name}: {cost_price}")
 
                     # Check if all quotes received
                     status = check_all_quotes_received(job_id)

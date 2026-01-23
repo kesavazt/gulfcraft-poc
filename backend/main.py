@@ -3,7 +3,7 @@ from langgraph.prebuilt import ToolNode
 from core.state import AgentState
 from agents import (
     supervisor_node, search_node, refinement_node,
-    selection_node, costing_node
+    selection_node, costing_node, status_node
 )
 from utils.tools import search_similar_quotations
 from core.database import init_db
@@ -19,6 +19,7 @@ workflow.add_node("Tools", tool_node)
 workflow.add_node("RefinementAgent", refinement_node)
 workflow.add_node("SelectionAgent", selection_node)
 workflow.add_node("CostingAgent", costing_node)
+workflow.add_node("StatusAgent", status_node)
 
 # Set entry point
 workflow.set_entry_point("Supervisor")
@@ -37,9 +38,11 @@ workflow.add_conditional_edges(
     {
         "SearchAgent": "SearchAgent",
         "SelectionAgent": "SelectionAgent",
+        "StatusAgent": "StatusAgent",
         "FINISH": END
     }
 )
+workflow.add_edge("StatusAgent", END)
 
 # Search flow: SearchAgent -> Tools (if tool call) or RefinementAgent (if direct search)
 def search_router(state):

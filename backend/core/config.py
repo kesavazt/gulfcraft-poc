@@ -6,6 +6,8 @@ load_dotenv()
 TOP_K_ITEMS = 5
 PRICE_THRESHOLD = 1000.0  # Items above this price require quotation
 PROFIT_MARGIN = float(os.getenv("PROFIT_MARGIN", "1.5"))  # Multiplier for profit (1.5 = 50% margin)
+BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+TEMP_DOWNLOADS_DIR = os.path.join(BASE_DIR, "temp_downloads")
 
 # --- SharePoint Config ---
 SHAREPOINT_SITE_URL = os.getenv("SHAREPOINT_SITE_URL", "https://gulfcraft.sharepoint.com/sites/costing")

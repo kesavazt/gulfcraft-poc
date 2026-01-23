@@ -82,15 +82,16 @@ GMAIL_SMTP_PORT = 587
 MS_SMTP_SERVER = "smtp.office365.com"
 MS_SMTP_PORT = 587
 
-def send_email(to: str, subject: str, body: str, service: str = "microsoft") -> bool:
+def send_email(to: str, subject: str, body: str, service: str = "microsoft", attachment_path: str = None) -> bool:
     """
-    Send an email using configured SMTP services.
+    Send an email using configured SMTP services, optionally with an attachment.
 
     Args:
         to: Recipient email address
         subject: Email subject
         body: Email body text
         service: "microsoft" or "gmail"
+        attachment_path: Optional path to a file to attach
 
     Returns:
         True if email sent successfully, False otherwise
@@ -114,6 +115,22 @@ def send_email(to: str, subject: str, body: str, service: str = "microsoft") -> 
     msg["To"] = to
     msg["Subject"] = subject
     msg.set_content(body)
+
+    if attachment_path and os.path.exists(attachment_path):
+        import mimetypes
+        ctype, encoding = mimetypes.guess_type(attachment_path)
+        if ctype is None or encoding is not None:
+            ctype = 'application/octet-stream'
+        maintype, subtype = ctype.split('/', 1)
+        
+        with open(attachment_path, 'rb') as fp:
+            msg.add_attachment(
+                fp.read(),
+                maintype=maintype,
+                subtype=subtype,
+                filename=os.path.basename(attachment_path)
+            )
+        print(f"[SMTP] Attached file: {attachment_path}")
 
     trace_input = {
         "to": to,
@@ -285,8 +302,8 @@ def update_sharepoint_status(job_id: str, status: Optional[str] = None, price: O
         return False
 
 
-def send_costing_ready_notification(job_id: str, description: str = "", sharepoint_url: Optional[str] = None):
-    """Send a notification email when a costing job becomes Ready."""
+def send_costing_ready_notification(job_id: str, description: str = "", sharepoint_url: Optional[str] = None, attachment_path: str = None):
+    """Send a notification email when a costing job becomes Ready, optionally with attachment."""
     to_email = config.NOTIFICATION_EMAIL
     if not to_email:
         print("[Notify] No NOTIFICATION_EMAIL configured; skipping ready notification.")
@@ -305,10 +322,10 @@ def send_costing_ready_notification(job_id: str, description: str = "", sharepoi
     body_lines.append("\nThe costing sheet has been updated with all received quotes.")
     body = "\n".join(body_lines)
 
-    sent = send_email(to_email, subject, body, service="microsoft")
+    sent = send_email(to_email, subject, body, service="microsoft", attachment_path=attachment_path)
     _trace_tool(
         name="send_costing_ready_notification",
-        input_payload={"job_id": job_id, "to": to_email},
+        input_payload={"job_id": job_id, "to": to_email, "has_attachment": bool(attachment_path)},
         output_payload={"sent": sent}
     )
     return sent
@@ -327,8 +344,8 @@ def generate_costing_sheet(job_id: str, details: str, price: float) -> str:
         
         # Save to a temp file
         filename = f"costing_{job_id}.xlsx"
-        output_path = os.path.join("temp_downloads", filename)
-        os.makedirs("temp_downloads", exist_ok=True)
+        output_path = os.path.join(config.TEMP_DOWNLOADS_DIR, filename)
+        os.makedirs(config.TEMP_DOWNLOADS_DIR, exist_ok=True)
         wb.save(output_path)
         
         print(f"[SharePoint] Generated costing sheet: {output_path}")
@@ -444,7 +461,7 @@ def get_product_price(item_code: str) -> Dict[str, Any]:
                 "found": True,
                 "item_number": product.item_number,
                 "unit_cost": product.unit_cost,
-                "vendor_email": product.vendor_email or "vinod.ihava@gulfcraftinc.com"
+                "vendor_email": product.vendor_email or config.VENDOR_DEFAULT_EMAIL
             }
         else:
             # Return default vendor if product not found
@@ -452,11 +469,11 @@ def get_product_price(item_code: str) -> Dict[str, Any]:
                 "found": False,
                 "item_number": item_code,
                 "unit_cost": None,
-                "vendor_email": "vinod.ihava@gulfcraftinc.com"
+                "vendor_email": config.VENDOR_DEFAULT_EMAIL
             }
     except Exception as e:
         print(f"DB Error: {e}")
-        return {"found": False, "unit_cost": None, "vendor_email": "vinod.ihava@gulfcraftinc.com"}
+        return {"found": False, "unit_cost": None, "vendor_email": config.VENDOR_DEFAULT_EMAIL}
     finally:
         session.close()
 
@@ -638,8 +655,8 @@ def create_costing_sheet_with_items(
 
     # Save file
     filename = f"costing_{job_id}.xlsx"
-    output_path = os.path.join("temp_downloads", filename)
-    os.makedirs("temp_downloads", exist_ok=True)
+    output_path = os.path.join(config.TEMP_DOWNLOADS_DIR, filename)
+    os.makedirs(config.TEMP_DOWNLOADS_DIR, exist_ok=True)
     wb.save(output_path)
 
     print(f"[CostingSheet] Generated: {output_path} (Profit Margin: {profit_margin}x)")
@@ -674,7 +691,7 @@ def regenerate_costing_sheet(job_id: str) -> Optional[str]:
                 "unit_price": li.unit_price,
                 "price_status": li.price_status or "pending",
                 "vendor_email": li.vendor_email,
-                "item_type": li.item_type
+                "item_type": getattr(li, "item_type", None)
             })
 
         return create_costing_sheet_with_items(
@@ -820,7 +837,8 @@ def save_costing_line_items(job_id: str, items: List[Dict[str, Any]]) -> bool:
                 quantity=item.get("quantity", 1),
                 unit_price=item.get("unit_price"),
                 price_status=item.get("price_status", "pending"),
-                vendor_email=item.get("vendor_email")
+                vendor_email=item.get("vendor_email"),
+                item_type=item.get("item_type")
             )
             session.add(line_item)
 
@@ -857,6 +875,56 @@ def get_pending_quote_requests(job_id: str = None) -> List[Dict[str, Any]]:
             "email_subject": req.email_subject,
             "sent_at": req.email_sent_at.isoformat() if req.email_sent_at else None
         } for req in requests]
+    except Exception as e:
+        print(f"DB Error: {e}")
+        return []
+    finally:
+        session.close()
+
+
+def get_costing_job_statuses(user_id: int, job_id: Optional[str] = None) -> List[Dict[str, Any]]:
+    """
+    Retrieves costing job statuses for a user, optionally filtered by job_id.
+    Includes line items with their pricing status and quote tracking.
+    """
+    session = SessionLocal()
+    try:
+        query = session.query(CostingRequest).filter(
+            CostingRequest.user_id == user_id
+        )
+        if job_id:
+            query = query.filter(CostingRequest.job_id == job_id)
+
+        requests = query.order_by(CostingRequest.created_at.desc()).all()
+        results = []
+        for req in requests:
+            line_items = session.query(CostingLineItem).filter(
+                CostingLineItem.costing_request_id == req.id
+            ).all()
+            pending_reqs = session.query(PendingQuoteRequest).filter(
+                PendingQuoteRequest.costing_request_id == req.id
+            ).all()
+            results.append({
+                "job_id": req.job_id,
+                "status": req.status,
+                "item_details": req.item_details,
+                "created_at": req.created_at.isoformat() if req.created_at else None,
+                "line_items": [{
+                    "item_name": li.item_name,
+                    "item_code": li.item_code,
+                    "quantity": li.quantity,
+                    "unit_price": li.unit_price,
+                    "price_status": li.price_status,
+                    "quote_received_at": li.quote_received_at.isoformat() if li.quote_received_at else None
+                } for li in line_items],
+                "quote_requests": [{
+                    "item_name": pr.item_name,
+                    "status": pr.status,
+                    "sent_at": pr.email_sent_at.isoformat() if pr.email_sent_at else None,
+                    "received_at": pr.received_at.isoformat() if pr.received_at else None
+                } for pr in pending_reqs]
+            })
+        return results
     except Exception as e:
         print(f"DB Error: {e}")
         return []

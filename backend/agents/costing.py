@@ -185,9 +185,26 @@ def costing_node(state: AgentState):
         return {
             "messages": [AIMessage(content="Failed to create costing request. Please try again.")]
         }
+    tools._trace_tool(
+        name="costing_job_started",
+        input_payload={
+            **trace_input,
+            "threshold": threshold,
+            "description_len": len(description or "")
+        },
+        output_payload={"job_id": job_id}
+    )
 
     # Step 3: Resolve prices
     costing_items, pending_quote_items = _resolve_prices(estimation_items, threshold)
+    tools._trace_tool(
+        name="costing_job_pricing",
+        input_payload={"job_id": job_id},
+        output_payload={
+            "items": len(costing_items),
+            "pending_quotes": len(pending_quote_items)
+        }
+    )
 
     # Step 4: Save costing line items
     tools.save_costing_line_items(job_id, costing_items)
@@ -196,16 +213,35 @@ def costing_node(state: AgentState):
     file_path = tools.create_costing_sheet_with_items(
         job_id, costing_items, quotation_id, description
     )
+    tools._trace_tool(
+        name="costing_job_sheet",
+        input_payload={"job_id": job_id},
+        output_payload={
+            "generated_file": file_path,
+            "has_pending": len(pending_quote_items) > 0
+        }
+    )
 
     # Step 6: Send emails for pending items
     if pending_quote_items:
         _send_quote_emails(job_id, pending_quote_items)
+    tools._trace_tool(
+        name="costing_job_emails",
+        input_payload={"job_id": job_id},
+        output_payload={"emails_sent": len(pending_quote_items) > 0, "count": len(pending_quote_items)}
+    )
 
     # Step 7: Set download URL
     sharepoint_url = f"/costing-sheets/{file_path}" if file_path else None
 
     # Step 8: Update SharePoint
     _update_sharepoint(job_id, description, costing_items, bool(pending_quote_items))
+    sp_status = "Awaiting Quote" if pending_quote_items else "Ready"
+    tools._trace_tool(
+        name="costing_job_sharepoint",
+        input_payload={"job_id": job_id},
+        output_payload={"status": sp_status}
+    )
 
     # Build response
     response = _build_response(
@@ -214,7 +250,7 @@ def costing_node(state: AgentState):
     )
 
     tools._trace_tool(
-        name="costing_node",
+        name="costing_job_completed",
         input_payload={**trace_input, "items": len(estimation_items), "pending": len(pending_quote_items)},
         output_payload={"job_id": job_id, "emails_sent": len(pending_quote_items) > 0}
     )
