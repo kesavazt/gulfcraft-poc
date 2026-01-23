@@ -243,7 +243,8 @@ def download_costing_sheet_by_job(job_id: str, current_user: User = Depends(get_
     return FileResponse(
         file_path,
         filename=filename,
-        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Cache-Control": "no-store, max-age=0", "Pragma": "no-cache"}
     )
 
 
@@ -261,7 +262,8 @@ def download_costing_sheet(filename: str, current_user: User = Depends(get_curre
     return FileResponse(
         file_path,
         filename=filename,
-        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Cache-Control": "no-store, max-age=0", "Pragma": "no-cache"}
     )
 
 
@@ -274,7 +276,11 @@ def download_file(filename: str, current_user: User = Depends(get_current_user))
 
     file_path = os.path.join("temp_downloads", filename)
     if os.path.exists(file_path):
-        return FileResponse(file_path, filename=filename)
+        return FileResponse(
+            file_path,
+            filename=filename,
+            headers={"Cache-Control": "no-store, max-age=0", "Pragma": "no-cache"}
+        )
     raise HTTPException(status_code=404, detail="File not found")
 
 if __name__ == "__main__":

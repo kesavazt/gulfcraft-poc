@@ -1,12 +1,19 @@
+import os
+import sys
 import random
 import json
 from sys import api_version
+from pathlib import Path
 from sqlalchemy.orm import Session
-from database import SessionLocal, Product,QuotationLines,EstimationLines, init_db, engine
 import sqlalchemy
 import openai
-import os
-import config
+
+BASE_DIR = Path(__file__).resolve().parents[1]
+if str(BASE_DIR) not in sys.path:
+    sys.path.insert(0, str(BASE_DIR))
+
+from core import config
+from core.database import SessionLocal, Product, QuotationLines, EstimationLines, init_db, engine
 
 
 client = openai.AzureOpenAI(api_key=config.OPENAI_API_KEY,api_version=config.OPENAI_API_VERSION,azure_endpoint=config.AZURE_OPENAI_ENDPOINT)

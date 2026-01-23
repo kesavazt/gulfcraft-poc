@@ -21,6 +21,7 @@ def search_node(state: AgentState):
     Handles both new searches and "show more" requests.
     """
     user_query = state["messages"][-1].content
+    trace_input = {"user_query": user_query}
 
     # Check if this is a "show more" request
     show_more_phrases = ["more quotation", "show more", "see more", "other quotation", "different quotation"]
@@ -45,11 +46,17 @@ def search_node(state: AgentState):
             tool_call_id="show_more_search"
         )
 
-        return {
+        result_payload = {
             "messages": [msg],
             "current_top_k": new_top_k,
             "selected_quotation": None
         }
+        tools._trace_tool(
+            name="search_node_show_more",
+            input_payload={**trace_input, "last_boat_model": last_boat_model, "last_description": last_description},
+            output_payload={"results_count": len(search_results), "top_k": new_top_k}
+        )
+        return result_payload
     else:
         # Extract description and boat model using LLM for new search
         # Pass conversation history for context
@@ -59,7 +66,20 @@ def search_node(state: AgentState):
         ] + messages
         
         llm_with_tools = llm.bind_tools([tools.search_similar_quotations])
-        result = llm_with_tools.invoke(extraction_prompt)
+        try:
+            result = llm_with_tools.invoke(extraction_prompt)
+            tools._trace_tool(
+                name="search_node_extract",
+                input_payload={**trace_input, "conversation_len": len(messages)},
+                output_payload={"tool_calls": bool(result.tool_calls)}
+            )
+        except Exception as e:
+            tools._trace_tool(
+                name="search_node_extract",
+                input_payload={**trace_input, "conversation_len": len(messages)},
+                error=e
+            )
+            raise
 
         # Extract parameters from tool call for future "show more" requests
         new_description = None
@@ -91,7 +111,7 @@ def refinement_node(state: AgentState):
     Parses the tool output and stores structured quotation data in state.
     """
     messages = state.get("messages", [])
-
+    trace_input = {"messages_count": len(messages)}
     # Find the tool message with search results
     fetched_quotations = ""
     for msg in reversed(messages):
@@ -121,7 +141,20 @@ def refinement_node(state: AgentState):
 
     # Generate presentation message
     presentation_prompt = [("system", REFINEMENT_PROMPT.format(count=len(parsed_quotations)))]
-    result = llm.invoke(presentation_prompt)
+    try:
+        result = llm.invoke(presentation_prompt)
+        tools._trace_tool(
+            name="refinement_node",
+            input_payload={**trace_input, "results_count": len(parsed_quotations)},
+            output_payload={"awaiting_selection": True}
+        )
+    except Exception as e:
+        tools._trace_tool(
+            name="refinement_node",
+            input_payload={**trace_input, "results_count": len(parsed_quotations)},
+            error=e
+        )
+        raise
 
     return {
         "messages": [result],

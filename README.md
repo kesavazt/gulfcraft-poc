@@ -65,10 +65,9 @@ SMTP_PASSWORD=<app_password>
     cd gulfcraft
     ```
 
-2.  **Create a virtual environment**:
+2.  **Activate the environment**:
     ```bash
-    conda create -n costing-agent python=3.10
-    conda activate costing-agent
+    conda activate ocr-dev
     ```
 
 3.  **Install dependencies**:
@@ -82,7 +81,8 @@ Initialize the database tables (this will drop existing tables if run directly):
 
 ```bash
 # Verify DATABASE_URL in .env first
-python backend/database.py
+cd backend
+python -m core.database
 ```
 
 ### 5. Running the Application
@@ -94,7 +94,7 @@ Handles the agent workflow, chat endpoints, and file downloads.
 
 ```bash
 cd backend
-uvicorn api:app --host 0.0.0.0 --port 8000
+uvicorn core.api:app --host 0.0.0.0 --port 8000 --reload
 ```
 *   API Docs: `http://localhost:8000/docs`
 
@@ -102,7 +102,7 @@ uvicorn api:app --host 0.0.0.0 --port 8000
 Runs in the background to poll for vendor quotes and process PDF attachments.
 
 ```bash
-python backend/email_monitor.py run
+python backend/services/email_monitor.py run
 ```
 
 #### C. Frontend (React)

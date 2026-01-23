@@ -7,8 +7,15 @@ import sys
 import base64
 import json
 import requests
+from pathlib import Path
 from typing import List, Dict, Any, Optional
-import config
+
+# Ensure backend package is discoverable when run as a script
+BASE_DIR = Path(__file__).resolve().parents[1]
+if str(BASE_DIR) not in sys.path:
+    sys.path.insert(0, str(BASE_DIR))
+
+from core import config
 
 # Mistral OCR API endpoint
 MISTRAL_OCR_URL = "https://api.mistral.ai/v1/ocr"

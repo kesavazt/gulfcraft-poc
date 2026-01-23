@@ -19,6 +19,62 @@ from openpyxl.styles import Font, Alignment, Border, Side, PatternFill
 from langchain.tools import tool
 import requests
 
+# Optional Langfuse telemetry
+try:
+    from langfuse import Langfuse
+except ImportError:
+    Langfuse = None
+
+LANGFUSE_ENABLED = bool(
+    Langfuse
+    and config.LANGFUSE_PUBLIC_KEY
+    and config.LANGFUSE_SECRET_KEY
+)
+_langfuse_client = None
+
+
+def _get_langfuse_client():
+    """Lazily initialize Langfuse client if credentials are present."""
+    global _langfuse_client
+    if not LANGFUSE_ENABLED:
+        return None
+    if _langfuse_client is None:
+        try:
+            _langfuse_client = Langfuse(
+                public_key=config.LANGFUSE_PUBLIC_KEY,
+                secret_key=config.LANGFUSE_SECRET_KEY,
+                host=config.LANGFUSE_HOST,
+            )
+        except Exception as e:
+            print(f"[Langfuse] Init error: {e}")
+            _langfuse_client = None
+    return _langfuse_client
+
+
+def _trace_tool(name: str, input_payload: Any, output_payload: Any = None, error: Exception = None):
+    """Send a lightweight Langfuse trace for tool usage."""
+    client = _get_langfuse_client()
+    if not client:
+        return
+
+    metadata = {"source": "utils.tools"}
+    if error:
+        metadata["error"] = str(error)
+
+    try:
+        method = getattr(client, "trace", None) or getattr(client, "event", None)
+        if not callable(method):
+            return
+        method(
+            name=name,
+            input=input_payload,
+            output=output_payload,
+            metadata=metadata,
+        )
+    except Exception as e:  # Telemetry must never break runtime
+        if isinstance(e, AttributeError):
+            return
+        print(f"[Langfuse] Trace error ({name}): {e}")
 
 # --- SMTP Email Services ---
 GMAIL_SMTP_SERVER = "smtp.gmail.com"
@@ -59,6 +115,12 @@ def send_email(to: str, subject: str, body: str, service: str = "microsoft") -> 
     msg["Subject"] = subject
     msg.set_content(body)
 
+    trace_input = {
+        "to": to,
+        "subject": subject,
+        "service": service
+    }
+
     try:
         print(f"[SMTP] Connecting to {service} server ({server_addr})...")
         server = smtplib.SMTP(server_addr, server_port)
@@ -67,9 +129,19 @@ def send_email(to: str, subject: str, body: str, service: str = "microsoft") -> 
         server.send_message(msg)
         server.quit()
         print(f"[SMTP] Email successfully sent to {to} via {service}")
+        _trace_tool(
+            name="send_email",
+            input_payload=trace_input,
+            output_payload={"status": "sent"}
+        )
         return True
     except Exception as e:
         print(f"[SMTP] Error sending via {service}: {e}")
+        _trace_tool(
+            name="send_email",
+            input_payload=trace_input,
+            error=e
+        )
         return False
 
 
@@ -155,6 +227,92 @@ def create_sharepoint_list_item(
              print(f"Response: {e.response.text}")
         return False
 
+
+def update_sharepoint_status(job_id: str, status: Optional[str] = None, price: Optional[float] = None) -> bool:
+    """
+    Updates an existing SharePoint list item (matched by JobID) with new status and/or price.
+    """
+    site_id = config.SHAREPOINT_SITE_ID
+    list_name = config.SHAREPOINT_LIST_NAME
+
+    if not site_id:
+        print("[SharePoint] Missing Site ID configuration")
+        return False
+
+    token = get_graph_access_token()
+    if not token:
+        return False
+
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+        "Prefer": "HonorNonIndexedQueriesWarningMayFailRandomly"
+    }
+
+    try:
+        # Find the item by JobID
+        list_items_url = f"https://graph.microsoft.com/v1.0/sites/{site_id}/lists/{list_name}/items"
+        resp = requests.get(
+            list_items_url,
+            headers=headers,
+            params={"$filter": f"fields/JobID eq '{job_id}'"}
+        )
+        resp.raise_for_status()
+        items = resp.json().get("value", [])
+        if not items:
+            print(f"[SharePoint] No list item found for JobID {job_id}")
+            return False
+
+        item_id = items[0]["id"]
+        fields_payload = {}
+        if status is not None:
+            fields_payload["Status"] = str(status)
+        if price is not None:
+            fields_payload["Price"] = str(price)
+
+        if not fields_payload:
+            return True
+
+        update_url = f"https://graph.microsoft.com/v1.0/sites/{site_id}/lists/{list_name}/items/{item_id}/fields"
+        update_resp = requests.patch(update_url, headers=headers, json=fields_payload)
+        update_resp.raise_for_status()
+        print(f"[SharePoint] Updated JobID {job_id} with fields: {fields_payload}")
+        return True
+    except Exception as e:
+        print(f"[SharePoint] Update error for {job_id}: {e}")
+        if hasattr(e, 'response') and e.response is not None:
+             print(f"Response: {e.response.text}")
+        return False
+
+
+def send_costing_ready_notification(job_id: str, description: str = "", sharepoint_url: Optional[str] = None):
+    """Send a notification email when a costing job becomes Ready."""
+    to_email = config.NOTIFICATION_EMAIL
+    if not to_email:
+        print("[Notify] No NOTIFICATION_EMAIL configured; skipping ready notification.")
+        return False
+
+    subject = f"Costing Ready: {job_id}"
+    body_lines = [
+        f"Job ID: {job_id}",
+        f"Status: Ready",
+    ]
+    if description:
+        body_lines.append(f"Description: {description}")
+    if sharepoint_url:
+        body_lines.append(f"SharePoint: {sharepoint_url}")
+
+    body_lines.append("\nThe costing sheet has been updated with all received quotes.")
+    body = "\n".join(body_lines)
+
+    sent = send_email(to_email, subject, body, service="microsoft")
+    _trace_tool(
+        name="send_costing_ready_notification",
+        input_payload={"job_id": job_id, "to": to_email},
+        output_payload={"sent": sent}
+    )
+    return sent
+
 # Deprecated/Mock functions removed or kept for reference if needed
 # (create_sharepoint_job and update_sharepoint_job logic replaced/superseded by above for the actual list)
 
@@ -197,13 +355,26 @@ def search_similar_quotations(job_description: str, boat_model: str, top_k: int 
     """Searches for similar quotations in the DB"""
     if top_k is None:
         top_k = config.TOP_K_ITEMS
-    #print(f"Searching for similar quotations (top_k={top_k})")
-    #print(job_description)
-    #print(boat_model)
-    result =hybrid_search(job_description, boat_model.upper(), top_k=top_k)
-    #print(result)
-    #print(job_description,boat_model)
-    return result
+    trace_input = {
+        "description": job_description,
+        "boat_model": boat_model,
+        "top_k": top_k
+    }
+    try:
+        result = hybrid_search(job_description, boat_model.upper(), top_k=top_k)
+        _trace_tool(
+            name="search_similar_quotations",
+            input_payload=trace_input,
+            output_payload={"results_count": len(result)}
+        )
+        return result
+    except Exception as e:
+        _trace_tool(
+            name="search_similar_quotations",
+            input_payload=trace_input,
+            error=e
+        )
+        raise
 
 
 # --- Monitoring Tools ---
@@ -314,9 +485,27 @@ def create_costing_request(
         session.add(req)
         session.commit()
         print(f"[CostingRequest] Created {job_id}")
+        _trace_tool(
+            name="create_costing_request",
+            input_payload={
+                "user_id": user_id,
+                "quotation_id": quotation_id,
+                "line_num": line_num
+            },
+            output_payload={"job_id": job_id}
+        )
         return job_id
     except Exception as e:
         print(f"DB Error: {e}")
+        _trace_tool(
+            name="create_costing_request",
+            input_payload={
+                "user_id": user_id,
+                "quotation_id": quotation_id,
+                "line_num": line_num
+            },
+            error=e
+        )
         return ""
     finally:
         session.close()
@@ -455,6 +644,50 @@ def create_costing_sheet_with_items(
 
     print(f"[CostingSheet] Generated: {output_path} (Profit Margin: {profit_margin}x)")
     return output_path
+
+
+def regenerate_costing_sheet(job_id: str) -> Optional[str]:
+    """
+    Regenerates the costing sheet from the latest DB state for the given job.
+    Useful after receiving new quotes so downloads reflect updated prices.
+    """
+    session = SessionLocal()
+    try:
+        costing_req = session.query(CostingRequest).filter(
+            CostingRequest.job_id == job_id
+        ).first()
+
+        if not costing_req:
+            print(f"[CostingSheet] No costing request found for {job_id}")
+            return None
+
+        line_items = session.query(CostingLineItem).filter(
+            CostingLineItem.costing_request_id == costing_req.id
+        ).all()
+
+        items = []
+        for li in line_items:
+            items.append({
+                "item_name": li.item_name,
+                "item_code": li.item_code,
+                "quantity": li.quantity or 1,
+                "unit_price": li.unit_price,
+                "price_status": li.price_status or "pending",
+                "vendor_email": li.vendor_email,
+                "item_type": li.item_type
+            })
+
+        return create_costing_sheet_with_items(
+            job_id=job_id,
+            items=items,
+            quotation_id=costing_req.quotation_id or "",
+            description=costing_req.item_details or ""
+        )
+    except Exception as e:
+        print(f"[CostingSheet] Regenerate error for {job_id}: {e}")
+        return None
+    finally:
+        session.close()
 
 
 def send_price_request_email(
@@ -655,6 +888,9 @@ def mark_quote_received(
 
             # Also update the costing sheet
             update_costing_sheet_with_price(job_id, item_name, price)
+
+            # Regenerate costing sheet file so downloads reflect new prices
+            regenerate_costing_sheet(job_id)
             return True
 
         return False
@@ -685,6 +921,28 @@ def check_all_quotes_received(job_id: str) -> Dict[str, Any]:
             if costing_req:
                 costing_req.status = "Completed"
                 session.commit()
+
+                # Recalculate selling price for SharePoint and mark as Ready
+                total_selling = 0
+                line_items = session.query(CostingLineItem).filter(
+                    CostingLineItem.costing_request_id == costing_req.id
+                ).all()
+                for item in line_items:
+                    if item.unit_price is not None:
+                        qty = item.quantity or 1
+                        total_selling += (item.unit_price * qty * config.PROFIT_MARGIN)
+
+                update_sharepoint_status(
+                    job_id=job_id,
+                    status="Ready",
+                    price=round(total_selling, 2) if total_selling else None
+                )
+                # Notify via email that the job is ready
+                send_costing_ready_notification(
+                    job_id=job_id,
+                    description=costing_req.item_details or "",
+                    sharepoint_url=costing_req.sharepoint_url
+                )
 
             return {
                 "all_received": True,

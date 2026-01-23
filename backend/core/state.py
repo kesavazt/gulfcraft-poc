@@ -38,6 +38,7 @@ class AgentState(TypedDict, total=False):
     # Costing Workflow State
     # =========================================================================
     job_id: Optional[str]  # Generated costing job ID (e.g., COST-XXXXXXXX)
+    job_description_override: Optional[str]  # Optional user-provided description override
     estimation_items: List[Dict[str, Any]]  # Items from EstimationLines
     costing_items: List[Dict[str, Any]]  # Items with prices (resolved or pending)
     pending_quote_items: List[Dict[str, Any]]  # Items requiring price quotes (> threshold)

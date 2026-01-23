@@ -12,6 +12,16 @@ from utils.prompts import SELECTION_EXTRACTION_PROMPT, QUOTATION_CONFIRMATION_TE
 from utils import tools
 
 
+def _extract_description_override(user_message: str) -> str:
+    """Extract an explicit job description override from the user's confirmation message."""
+    match = re.search(
+        r"(?:new\s+job\s+description|job\s+description|new\s+description|description|desc)\s*[:\-]\s*(.+)$",
+        user_message,
+        re.IGNORECASE
+    )
+    if not match:
+        return ""
+    return match.group(1).strip().strip('"').strip("'")
 
 
 def _check_confirmation(user_message: str, state: AgentState):
@@ -21,14 +31,20 @@ def _check_confirmation(user_message: str, state: AgentState):
     
     msg = user_message.lower()
     if any(w in msg for w in ["yes", "y", "confirm", "proceed", "go ahead"]):
+        description_override = _extract_description_override(user_message)
+        response = "Proceeding to create costing job..."
+        if description_override:
+            response = f"Proceeding to create costing job with updated description: {description_override}"
         return {
-            "messages": [AIMessage(content="Proceeding to create costing job...")],
+            "messages": [AIMessage(content=response)],
+            "job_description_override": description_override or None,
             "next": "CostingAgent"
         }
     elif any(w in msg for w in ["no", "n", "cancel", "stop"]):
         return {
             "messages": [AIMessage(content="Cancelled. Would you like to see other options or start a new search?")],
             "selected_quotation": None,
+            "job_description_override": None,
             "next": "__end__"
         }
     return None
@@ -114,10 +130,20 @@ def selection_node(state: AgentState):
     """
     user_message = state["messages"][-1].content
     similar_quotations = state.get("similar_quotations", [])
+    trace_input = {
+        "user_message": user_message,
+        "similar_count": len(similar_quotations),
+        "awaiting_selection": state.get("awaiting_selection", False)
+    }
     
     # Check for pending confirmation first
     confirmation_result = _check_confirmation(user_message, state)
     if confirmation_result:
+        tools._trace_tool(
+            name="selection_node_confirmation",
+            input_payload=trace_input,
+            output_payload={"next": confirmation_result.get("next")}
+        )
         return confirmation_result
     
     # Try selection methods in order of specificity
@@ -131,6 +157,15 @@ def selection_node(state: AgentState):
         quotation_id = selected.get('quotation_id')
         line_num = selected.get('line_num')
         estimation_lines = tools.get_estimation_lines(quotation_id, line_num)
+        tools._trace_tool(
+            name="selection_node_match",
+            input_payload=trace_input,
+            output_payload={
+                "quotation_id": quotation_id,
+                "line_num": line_num,
+                "items_count": len(estimation_lines)
+            }
+        )
         
         details_text = ""
         total_price = selected.get('price', 0) or selected.get('sales_price', 0)
@@ -152,15 +187,24 @@ def selection_node(state: AgentState):
 - **Boat Model:** {selected.get('boat_model') or selected.get('afz_boat_model_id')}
 - **Total Price:** {total_price:,.2f} AED{details_text}
 
-Do you want to create a costing job for this quotation? (Yes/No)"""
+Do you want to create a costing job for this quotation? (Yes/No)
+
+If you want to use a different job description, reply like:
+Yes, description: <your new description>"""
 
         return {
             "messages": [AIMessage(content=confirmation_msg)],
             "selected_quotation": selected,
+            "job_description_override": None,
             "awaiting_selection": False,
             "next": "FINISH" # Wait for user confirmation
         }
     else:
+        tools._trace_tool(
+            name="selection_node_no_match",
+            input_payload=trace_input,
+            output_payload={"matched": False}
+        )
         return {
             "messages": [AIMessage(content="I couldn't identify your selection. Please select one of the options by number (e.g., '1') or provide the Quotation ID.")],
             "awaiting_selection": True,

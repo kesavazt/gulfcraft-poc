@@ -5,3 +5,46 @@
 body {
   @apply bg-gray-50 text-gray-900;
 }
+
+/* Markdown Styling */
+.markdown-content table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 1rem 0;
+  background-color: white;
+}
+
+.markdown-content th,
+.markdown-content td {
+  padding: 0.75rem 1rem;
+  border: 1px solid #e5e7eb;
+  text-align: left;
+}
+
+.markdown-content th {
+  background-color: #f9fafb;
+  font-weight: 600;
+  color: #374151;
+}
+
+.markdown-content tr:nth-child(even) {
+  background-color: #f3f4f6;
+}
+
+.markdown-content p {
+  margin-bottom: 0.75rem;
+}
+
+.markdown-content p:last-child {
+  margin-bottom: 0;
+}
+
+.markdown-content ul, .markdown-content ol {
+  margin-left: 1.5rem;
+  margin-bottom: 1rem;
+}
+
+.markdown-content li {
+  margin-bottom: 0.25rem;
+}
+

@@ -3,6 +3,7 @@ Email Monitor Service
 Polls inbox via IMAP for incoming quotation emails and extracts prices using Mistral OCR.
 """
 import os
+import sys
 import time
 import email
 import imaplib
@@ -10,12 +11,18 @@ import threading
 from email.header import decode_header
 from datetime import datetime
 from typing import List, Dict, Any, Optional
-import config
-from database import (
+
+# Ensure the backend package is importable when running as a script
+BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if BASE_DIR not in sys.path:
+    sys.path.insert(0, BASE_DIR)
+
+from core import config
+from core.database import (
     SessionLocal, CostingRequest, CostingLineItem,
     PendingQuoteRequest
 )
-from tools import (
+from utils.tools import (
     mark_quote_received, check_all_quotes_received,
     create_costing_sheet_with_items
 )

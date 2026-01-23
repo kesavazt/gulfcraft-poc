@@ -155,11 +155,21 @@ def costing_node(state: AgentState):
 
     quotation_id = selected.get("quotation_id")
     line_num = selected.get("line_num")
-    description = selected.get("description", "")
+    description = state.get("job_description_override") or selected.get("description", "")
+    trace_input = {
+        "quotation_id": quotation_id,
+        "line_num": line_num,
+        "user_id": user_id
+    }
 
     # Step 1: Get estimation lines
     estimation_items = _get_estimation_items(quotation_id, line_num)
     if not estimation_items:
+        tools._trace_tool(
+            name="costing_node",
+            input_payload=trace_input,
+            output_payload={"status": "no_estimation_items"}
+        )
         return {
             "messages": [AIMessage(content=f"No estimation lines found for quotation {quotation_id}, line {line_num}. This quotation may not have associated items.")]
         }
@@ -167,6 +177,11 @@ def costing_node(state: AgentState):
     # Step 2: Create costing request
     job_id = tools.create_costing_request(user_id, quotation_id, line_num, description)
     if not job_id:
+        tools._trace_tool(
+            name="costing_node",
+            input_payload=trace_input,
+            output_payload={"status": "create_costing_failed"}
+        )
         return {
             "messages": [AIMessage(content="Failed to create costing request. Please try again.")]
         }
@@ -196,6 +211,12 @@ def costing_node(state: AgentState):
     response = _build_response(
         job_id, quotation_id, line_num, costing_items, pending_quote_items,
         file_path, sharepoint_url, threshold
+    )
+
+    tools._trace_tool(
+        name="costing_node",
+        input_payload={**trace_input, "items": len(estimation_items), "pending": len(pending_quote_items)},
+        output_payload={"job_id": job_id, "emails_sent": len(pending_quote_items) > 0}
     )
 
     return {

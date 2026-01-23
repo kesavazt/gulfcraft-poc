@@ -9,6 +9,7 @@ from langchain_core.messages import AIMessage
 from core.state import AgentState
 from utils.llm import llm
 from utils.prompts import SUPERVISOR_SYSTEM_PROMPT
+from utils import tools
 
 
 # --- Supervisor Configuration ---
@@ -55,7 +56,21 @@ def supervisor_node(state: AgentState):
     Returns:
         dict with 'next' key indicating the next agent, and optionally 'messages' for greetings.
     """
-    result = _supervisor_chain.invoke(state)
+    trace_input = {"messages_count": len(state.get("messages", []))}
+    try:
+        result = _supervisor_chain.invoke(state)
+        tools._trace_tool(
+            name="supervisor_node",
+            input_payload=trace_input,
+            output_payload={"next": result.get("next")}
+        )
+    except Exception as e:
+        tools._trace_tool(
+            name="supervisor_node",
+            input_payload=trace_input,
+            error=e
+        )
+        raise
 
     # If it's a greeting or info request, add the response to messages
     if result["next"] == "FINISH" and result.get("greeting_response"):
