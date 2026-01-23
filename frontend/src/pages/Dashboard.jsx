@@ -1,9 +1,9 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { MessageSquare, List, Send, LogOut, User, Download, RefreshCw, CheckCircle, Clock, DollarSign, FileText } from 'lucide-react';
+import { MessageSquare, List, Send, LogOut, User, Download, RefreshCw, CheckCircle, Clock, DollarSign, FileText, X, Edit2, Check, AlertCircle, Trash2, Plus, Search } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { sendMessage, getRequests, getUser, downloadFile } from '../api';
+import { sendMessage, getRequests, getUser, downloadFile, updateLineItem, approveJob, searchProducts, addLineItem, deleteLineItem } from '../api';
 
 export default function Dashboard() {
     const [activeTab, setActiveTab] = useState('chat');
@@ -16,6 +16,14 @@ export default function Dashboard() {
     const messagesEndRef = useRef(null);
     const navigate = useNavigate();
     const [agentState, setAgentState] = useState(null);
+    const [selectedJob, setSelectedJob] = useState(null);
+    const [editingItemId, setEditingItemId] = useState(null);
+    const [editValue, setEditValue] = useState('');
+    const [editType, setEditType] = useState('price'); // 'price', 'quantity', 'name', 'code'
+    const [actionLoading, setActionLoading] = useState(false);
+    const [searchQuery, setSearchQuery] = useState('');
+    const [searchResults, setSearchResults] = useState([]);
+    const [searchLoading, setSearchLoading] = useState(false);
 
     useEffect(() => {
         const fetchUser = async () => {
@@ -109,6 +117,148 @@ export default function Dashboard() {
         navigate('/login');
     };
 
+    const handleUpdateItem = async (jobId, itemId, field, value) => {
+        try {
+            setActionLoading(true);
+            const data = {};
+            if (field === 'price') data.unit_price = parseFloat(value);
+            if (field === 'quantity') data.quantity = parseInt(value);
+            if (field === 'name') data.item_name = value;
+            if (field === 'code') data.item_code = value;
+
+            const updatedItem = await updateLineItem(jobId, itemId, data);
+
+            // Update local state for immediate feedback
+            const updatedRequests = requests.map(req => {
+                if (req.job_id === jobId) {
+                    const updatedItems = req.line_items.map(item =>
+                        item.id === itemId ? updatedItem : item
+                    );
+                    const newTotal = updatedItems.reduce((acc, item) => acc + (item.unit_price || 0) * (item.quantity || 1), 0);
+                    return { ...req, line_items: updatedItems, price: newTotal };
+                }
+                return req;
+            });
+            setRequests(updatedRequests);
+            if (selectedJob?.job_id === jobId) {
+                const refreshedJob = updatedRequests.find(r => r.job_id === jobId);
+                setSelectedJob(refreshedJob);
+            }
+
+            setEditingItemId(null);
+        } catch (error) {
+            console.error('Update failed:', error);
+            alert('Failed to update item.');
+        } finally {
+            setActionLoading(false);
+        }
+    };
+
+    const handleSearchProducts = async (query) => {
+        setSearchQuery(query);
+        if (query.length < 2) {
+            setSearchResults([]);
+            return;
+        }
+        try {
+            setSearchLoading(true);
+            const results = await searchProducts(query);
+            setSearchResults(results);
+        } catch (error) {
+            console.error('Search failed:', error);
+        } finally {
+            setSearchLoading(false);
+        }
+    };
+
+    const handleAddItem = async (jobId, product = null) => {
+        try {
+            setActionLoading(true);
+            const itemData = product ? {
+                item_name: `Product ${product.item_number}`,
+                item_code: product.item_number,
+                unit_price: product.unit_cost,
+                item_type: 'Item',
+                vendor_email: product.vendor_email
+            } : {
+                item_name: 'New Custom Item',
+                quantity: 1,
+                item_type: 'Item'
+            };
+
+            const newItem = await addLineItem(jobId, itemData);
+
+            const updatedRequests = requests.map(req => {
+                if (req.job_id === jobId) {
+                    const updatedItems = [...(req.line_items || []), newItem];
+                    const newTotal = updatedItems.reduce((acc, item) => acc + (item.unit_price || 0) * (item.quantity || 1), 0);
+                    return { ...req, line_items: updatedItems, price: newTotal };
+                }
+                return req;
+            });
+            setRequests(updatedRequests);
+            if (selectedJob?.job_id === jobId) {
+                const refreshedJob = updatedRequests.find(r => r.job_id === jobId);
+                setSelectedJob(refreshedJob);
+            }
+
+            setSearchQuery('');
+            setSearchResults([]);
+        } catch (error) {
+            console.error('Add failed:', error);
+            alert('Failed to add item.');
+        } finally {
+            setActionLoading(false);
+        }
+    };
+
+    const handleDeleteItem = async (jobId, itemId) => {
+        if (!confirm('Are you sure you want to remove this item?')) return;
+        try {
+            setActionLoading(true);
+            await deleteLineItem(jobId, itemId);
+
+            const updatedRequests = requests.map(req => {
+                if (req.job_id === jobId) {
+                    const updatedItems = req.line_items.filter(i => i.id !== itemId);
+                    const newTotal = updatedItems.reduce((acc, item) => acc + (item.unit_price || 0) * (item.quantity || 1), 0);
+                    return { ...req, line_items: updatedItems, price: newTotal };
+                }
+                return req;
+            });
+            setRequests(updatedRequests);
+            if (selectedJob?.job_id === jobId) {
+                const refreshedJob = updatedRequests.find(r => r.job_id === jobId);
+                setSelectedJob(refreshedJob);
+            }
+        } catch (error) {
+            console.error('Delete failed:', error);
+            alert('Failed to delete item.');
+        } finally {
+            setActionLoading(false);
+        }
+    };
+
+    const handleApprove = async (jobId) => {
+        if (!window.confirm("Are you sure you want to approve this job and send the completion email?")) return;
+        setActionLoading(true);
+        try {
+            await approveJob(jobId);
+            const updatedRequests = requests.map(req =>
+                req.job_id === jobId ? { ...req, status: 'Approved' } : req
+            );
+            setRequests(updatedRequests);
+            if (selectedJob?.job_id === jobId) {
+                setSelectedJob({ ...selectedJob, status: 'Approved' });
+            }
+            alert("Job approved and email sent!");
+        } catch (error) {
+            console.error("Failed to approve job", error);
+        } finally {
+            setActionLoading(false);
+        }
+    };
+
     useEffect(() => {
         messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
     }, [messages, loading]);
@@ -157,8 +307,8 @@ export default function Dashboard() {
                             <button
                                 onClick={() => setActiveTab('chat')}
                                 className={`w-full flex items-center px-4 py-3 text-sm font-medium rounded-xl transition-all ${activeTab === 'chat'
-                                        ? 'bg-brand-50 text-brand-700'
-                                        : 'text-gray-600 hover:bg-gray-100 hover:text-gray-900'
+                                    ? 'bg-brand-50 text-brand-700'
+                                    : 'text-gray-600 hover:bg-gray-100 hover:text-gray-900'
                                     }`}
                             >
                                 <MessageSquare className={`mr-3 h-5 w-5 ${activeTab === 'chat' ? 'text-brand-600' : 'text-gray-400'}`} />
@@ -167,8 +317,8 @@ export default function Dashboard() {
                             <button
                                 onClick={() => setActiveTab('requests')}
                                 className={`w-full flex items-center px-4 py-3 text-sm font-medium rounded-xl transition-all ${activeTab === 'requests'
-                                        ? 'bg-brand-50 text-brand-700'
-                                        : 'text-gray-600 hover:bg-gray-100 hover:text-gray-900'
+                                    ? 'bg-brand-50 text-brand-700'
+                                    : 'text-gray-600 hover:bg-gray-100 hover:text-gray-900'
                                     }`}
                             >
                                 <List className={`mr-3 h-5 w-5 ${activeTab === 'requests' ? 'text-brand-600' : 'text-gray-400'}`} />
@@ -350,7 +500,10 @@ export default function Dashboard() {
                                                     </tr>
                                                 ) : (
                                                     requests.map((req) => (
-                                                        <tr key={req.id} className="hover:bg-gray-50 transition-colors">
+                                                        <tr key={req.id}
+                                                            onClick={() => setSelectedJob(req)}
+                                                            className="hover:bg-gray-50 transition-colors cursor-pointer"
+                                                        >
                                                             <td className="px-6 py-4 whitespace-nowrap">
                                                                 <span className="text-sm font-semibold text-brand-900 bg-brand-50 px-3 py-1 rounded-lg border border-brand-100">
                                                                     {req.job_id}
@@ -362,10 +515,12 @@ export default function Dashboard() {
                                                                 </p>
                                                             </td>
                                                             <td className="px-6 py-4 whitespace-nowrap">
-                                                                <span className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium ${req.status === 'Completed' ? 'bg-green-50 text-green-700 border border-green-200' :
+                                                                <span className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium ${req.status === 'Approved' ? 'bg-blue-50 text-blue-700 border border-blue-200' :
+                                                                    req.status === 'Completed' ? 'bg-green-50 text-green-700 border border-green-200' :
                                                                         req.status === 'Awaiting Quote' ? 'bg-yellow-50 text-yellow-700 border border-yellow-200' :
                                                                             'bg-brand-50 text-brand-700 border border-brand-200'
                                                                     }`}>
+                                                                    {req.status === 'Approved' && <CheckCircle className="h-3 w-3" />}
                                                                     {req.status === 'Completed' && <CheckCircle className="h-3 w-3" />}
                                                                     {req.status === 'Awaiting Quote' && <Clock className="h-3 w-3" />}
                                                                     {req.status}
@@ -384,7 +539,7 @@ export default function Dashboard() {
                                                             <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
                                                                 {new Date(req.created_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}
                                                             </td>
-                                                            <td className="px-6 py-4 whitespace-nowrap">
+                                                            <td className="px-6 py-4 whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
                                                                 <button
                                                                     onClick={() => downloadFile(`/costing-sheets/by-job/${req.job_id}`)}
                                                                     className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-brand-700 bg-brand-50 hover:bg-brand-100 rounded-lg border border-brand-200 transition-all"
@@ -406,6 +561,232 @@ export default function Dashboard() {
                     </div>
                 </div>
             </main>
+
+            {/* Job Details Modal */}
+            {selectedJob && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-gray-900/50 backdrop-blur-sm animate-in fade-in duration-200">
+                    <div className="bg-white rounded-2xl shadow-2xl w-full max-w-4xl max-h-[90vh] overflow-hidden flex flex-col scale-in duration-200">
+                        {/* Modal Header */}
+                        <div className="px-6 py-4 border-b border-gray-100 flex justify-between items-center bg-gray-50/50">
+                            <div>
+                                <div className="flex items-center gap-3">
+                                    <h3 className="text-xl font-bold text-gray-900">Job: {selectedJob.job_id}</h3>
+                                    <span className={`px-2.5 py-1 rounded-full text-xs font-bold uppercase tracking-wider ${selectedJob.status === 'Approved' ? 'bg-blue-100 text-blue-700' : 'bg-brand-100 text-brand-700'
+                                        }`}>
+                                        {selectedJob.status}
+                                    </span>
+                                </div>
+                                <p className="text-sm text-gray-500 mt-1">{selectedJob.item_details}</p>
+                            </div>
+                            <button
+                                onClick={() => setSelectedJob(null)}
+                                className="p-2 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-full transition-all"
+                            >
+                                <X className="h-6 w-6" />
+                            </button>
+                        </div>
+
+                        {/* Modal Body */}
+                        <div className="flex-1 overflow-y-auto p-6 space-y-6">
+                            {/* Product Search and Add Custom Item */}
+                            <div className="flex flex-col sm:flex-row gap-4 items-start">
+                                <div className="relative flex-1 w-full">
+                                    <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                                        <Search className="h-4 w-4 text-gray-400" />
+                                    </div>
+                                    <input
+                                        type="text"
+                                        value={searchQuery}
+                                        onChange={(e) => handleSearchProducts(e.target.value)}
+                                        placeholder="Search products by code..."
+                                        className="block w-full pl-10 pr-3 py-2 border border-gray-200 rounded-xl leading-5 bg-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-brand-500/20 focus:border-brand-500 sm:text-sm transition-all shadow-sm"
+                                    />
+                                    {searchResults.length > 0 && (
+                                        <div className="absolute z-10 mt-1 w-full bg-white shadow-xl max-h-60 rounded-xl py-1 text-base ring-1 ring-black ring-opacity-5 overflow-auto focus:outline-none sm:text-sm border border-gray-100 animate-in fade-in slide-in-from-top-1">
+                                            {searchResults.map((product) => (
+                                                <button
+                                                    key={product.id}
+                                                    onClick={() => handleAddItem(selectedJob.job_id, product)}
+                                                    className="w-full text-left cursor-pointer hover:bg-brand-50 px-4 py-2 transition-colors border-b last:border-0 border-gray-50"
+                                                >
+                                                    <div className="flex justify-between">
+                                                        <span className="font-semibold text-gray-900">{product.item_number}</span>
+                                                        <span className="text-brand-600 font-bold">{product.unit_cost?.toLocaleString()} AED</span>
+                                                    </div>
+                                                    <div className="text-xs text-gray-500 mt-0.5">{product.vendor_email || 'No vendor email'}</div>
+                                                </button>
+                                            ))}
+                                        </div>
+                                    )}
+                                    {searchLoading && (
+                                        <div className="absolute right-3 top-2.5">
+                                            <RefreshCw className="h-4 w-4 text-brand-500 animate-spin" />
+                                        </div>
+                                    )}
+                                </div>
+                                <button
+                                    onClick={() => handleAddItem(selectedJob.job_id)}
+                                    className="w-full sm:w-auto flex items-center justify-center gap-2 px-6 py-2 bg-white border-2 border-brand-100 text-brand-700 text-sm font-bold rounded-xl hover:bg-brand-50 hover:border-brand-200 transition-all shadow-sm"
+                                >
+                                    <Plus className="h-4 w-4" />
+                                    Custom Item
+                                </button>
+                            </div>
+
+                            <div>
+                                <h4 className="text-sm font-bold text-gray-400 uppercase tracking-widest mb-4">Line Items</h4>
+                                <div className="border border-gray-100 rounded-xl overflow-hidden shadow-sm">
+                                    <table className="min-w-full divide-y divide-gray-200 text-sm">
+                                        <thead className="bg-gray-50">
+                                            <tr>
+                                                <th className="px-4 py-3 text-left font-semibold text-gray-500">Item</th>
+                                                <th className="px-4 py-3 text-left font-semibold text-gray-500">Code</th>
+                                                <th className="px-4 py-3 text-center font-semibold text-gray-500" style={{ width: '80px' }}>Qty</th>
+                                                <th className="px-4 py-3 text-right font-semibold text-gray-500">Unit Price (AED)</th>
+                                                <th className="px-4 py-3 text-center font-semibold text-gray-500">Status</th>
+                                                <th className="px-4 py-3 text-right font-semibold text-gray-500" style={{ width: '50px' }}></th>
+                                            </tr>
+                                        </thead>
+                                        <tbody className="divide-y divide-gray-200 bg-white">
+                                            {selectedJob.line_items?.map((item) => (
+                                                <tr key={item.id} className="hover:bg-gray-50/50 group">
+                                                    <td className="px-4 py-3">
+                                                        {editingItemId === item.id && editType === 'name' ? (
+                                                            <div className="flex items-center gap-1">
+                                                                <input
+                                                                    type="text"
+                                                                    value={editValue}
+                                                                    onChange={(e) => setEditValue(e.target.value)}
+                                                                    className="w-full px-2 py-1 border border-brand-500 rounded outline-none"
+                                                                    autoFocus
+                                                                />
+                                                                <button onClick={() => handleUpdateItem(selectedJob.job_id, item.id, 'name', editValue)} className="p-1 bg-green-500 text-white rounded"><Check className="h-4 w-4" /></button>
+                                                            </div>
+                                                        ) : (
+                                                            <div className="flex items-center justify-between gap-1 group/item">
+                                                                <span className="font-medium text-gray-900">{item.item_name}</span>
+                                                                <button onClick={() => { setEditingItemId(item.id); setEditType('name'); setEditValue(item.item_name); }} className="p-1 text-gray-300 hover:text-brand-500 opacity-0 group-hover/item:opacity-100 transition-all"><Edit2 className="h-3 w-3" /></button>
+                                                            </div>
+                                                        )}
+                                                    </td>
+                                                    <td className="px-4 py-3">
+                                                        {editingItemId === item.id && editType === 'code' ? (
+                                                            <div className="flex items-center gap-1">
+                                                                <input
+                                                                    type="text"
+                                                                    value={editValue}
+                                                                    onChange={(e) => setEditValue(e.target.value)}
+                                                                    className="w-full px-2 py-1 border border-brand-500 rounded outline-none font-mono text-xs"
+                                                                    autoFocus
+                                                                />
+                                                                <button onClick={() => handleUpdateItem(selectedJob.job_id, item.id, 'code', editValue)} className="p-1 bg-green-500 text-white rounded"><Check className="h-4 w-4" /></button>
+                                                            </div>
+                                                        ) : (
+                                                            <div className="flex items-center justify-between gap-1 group/item">
+                                                                <span className="text-gray-500 font-mono text-xs">{item.item_code || '-'}</span>
+                                                                <button onClick={() => { setEditingItemId(item.id); setEditType('code'); setEditValue(item.item_code || ''); }} className="p-1 text-gray-300 hover:text-brand-500 opacity-0 group-hover/item:opacity-100 transition-all"><Edit2 className="h-3 w-3" /></button>
+                                                            </div>
+                                                        )}
+                                                    </td>
+                                                    <td className="px-4 py-3 text-center">
+                                                        {editingItemId === item.id && editType === 'quantity' ? (
+                                                            <div className="flex items-center gap-1">
+                                                                <input
+                                                                    type="number"
+                                                                    value={editValue}
+                                                                    onChange={(e) => setEditValue(e.target.value)}
+                                                                    className="w-16 px-1 py-1 border border-brand-500 rounded text-center outline-none"
+                                                                    autoFocus
+                                                                />
+                                                                <button onClick={() => handleUpdateItem(selectedJob.job_id, item.id, 'quantity', editValue)} className="p-1 bg-green-500 text-white rounded"><Check className="h-4 w-4" /></button>
+                                                            </div>
+                                                        ) : (
+                                                            <div className="flex items-center justify-center gap-1 group/item">
+                                                                <span className="text-gray-600">{item.quantity}</span>
+                                                                <button onClick={() => { setEditingItemId(item.id); setEditType('quantity'); setEditValue(item.quantity.toString()); }} className="p-1 text-gray-300 hover:text-brand-500 opacity-0 group-hover/item:opacity-100 transition-all"><Edit2 className="h-3 w-3" /></button>
+                                                            </div>
+                                                        )}
+                                                    </td>
+                                                    <td className="px-4 py-3 text-right">
+                                                        {editingItemId === item.id && editType === 'price' ? (
+                                                            <div className="flex items-center justify-end gap-1">
+                                                                <input
+                                                                    type="number"
+                                                                    value={editValue}
+                                                                    onChange={(e) => setEditValue(e.target.value)}
+                                                                    className="w-24 px-2 py-1 border border-brand-500 rounded text-right outline-none"
+                                                                    autoFocus
+                                                                />
+                                                                <button onClick={() => handleUpdateItem(selectedJob.job_id, item.id, 'price', editValue)} className="p-1 bg-green-500 text-white rounded"><Check className="h-4 w-4" /></button>
+                                                            </div>
+                                                        ) : (
+                                                            <div className="flex items-center justify-end gap-1 group/item">
+                                                                <span className="font-bold text-gray-900">
+                                                                    {item.unit_price ? item.unit_price.toFixed(2) : '0.00'}
+                                                                </span>
+                                                                <button onClick={() => { setEditingItemId(item.id); setEditType('price'); setEditValue(item.unit_price?.toString() || '0'); }} className="p-1 text-gray-300 hover:text-brand-500 opacity-0 group-hover/item:opacity-100 transition-all"><Edit2 className="h-3 w-3" /></button>
+                                                            </div>
+                                                        )}
+                                                    </td>
+                                                    <td className="px-4 py-3 text-center">
+                                                        <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${item.price_status === 'resolved' ? 'bg-green-100 text-green-700' : 'bg-yellow-100 text-yellow-700'
+                                                            }`}>
+                                                            {item.price_status}
+                                                        </span>
+                                                    </td>
+                                                    <td className="px-4 py-3 text-right">
+                                                        <button
+                                                            onClick={() => handleDeleteItem(selectedJob.job_id, item.id)}
+                                                            className="p-1.5 text-gray-300 hover:text-red-500 hover:bg-red-50 rounded transition-all opacity-0 group-hover:opacity-100"
+                                                        >
+                                                            <Trash2 className="h-4 w-4" />
+                                                        </button>
+                                                    </td>
+                                                </tr>
+                                            ))}
+                                        </tbody>
+                                        <tfoot className="bg-gray-50/50 font-bold">
+                                            <tr>
+                                                <td colSpan="3" className="px-4 py-4 text-right text-gray-500 uppercase tracking-wider text-xs">Total Estimated Cost</td>
+                                                <td className="px-4 py-4 text-right text-brand-900 text-lg">
+                                                    {(selectedJob.line_items?.reduce((acc, item) => acc + (item.unit_price || 0) * (item.quantity || 1), 0) || 0).toFixed(2)} AED
+                                                </td>
+                                                <td colSpan="2"></td>
+                                            </tr>
+                                        </tfoot>
+                                    </table>
+                                </div>
+                            </div>
+                        </div>
+
+                        {/* Modal Footer */}
+                        <div className="px-6 py-4 border-t border-gray-100 bg-gray-50 flex justify-between items-center">
+                            <div className="flex items-center gap-2 text-gray-500 text-sm">
+                                <AlertCircle className="h-4 w-4" />
+                                <span>Approval sends the final costing sheet to IT Support.</span>
+                            </div>
+                            <div className="flex gap-3">
+                                <button
+                                    onClick={() => setSelectedJob(null)}
+                                    className="px-6 py-2 text-sm font-semibold text-gray-600 hover:bg-gray-200 rounded-xl transition-all"
+                                >
+                                    Close
+                                </button>
+                                {selectedJob.status !== 'Approved' && (
+                                    <button
+                                        onClick={() => handleApprove(selectedJob.job_id)}
+                                        disabled={actionLoading}
+                                        className="flex items-center gap-2 px-8 py-2 bg-brand-600 text-white text-sm font-bold rounded-xl hover:bg-brand-700 shadow-lg shadow-brand-500/20 transition-all disabled:opacity-50"
+                                    >
+                                        {actionLoading ? <RefreshCw className="h-4 w-4 animate-spin" /> : <CheckCircle className="h-4 w-4" />}
+                                        Approve & Send Email
+                                    </button>
+                                )}
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            )}
         </div>
     );
 }

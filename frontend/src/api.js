@@ -47,6 +47,31 @@ export const getUser = async () => {
     return response.data;
 };
 
+export const searchProducts = async (query) => {
+    const response = await api.get(`/products/search?q=${query}`);
+    return response.data;
+};
+
+export const addLineItem = async (jobId, itemData) => {
+    const response = await api.post(`/requests/${jobId}/items`, itemData);
+    return response.data;
+};
+
+export const deleteLineItem = async (jobId, itemId) => {
+    const response = await api.delete(`/requests/${jobId}/items/${itemId}`);
+    return response.data;
+};
+
+export const updateLineItem = async (jobId, itemId, data) => {
+    const response = await api.put(`/requests/${jobId}/items/${itemId}`, data);
+    return response.data;
+};
+
+export const approveJob = async (jobId) => {
+    const response = await api.post(`/requests/${jobId}/approve`);
+    return response.data;
+};
+
 export const downloadFile = (downloadUrl) => {
     // Create a temporary link to trigger the download
     const token = localStorage.getItem('token');
