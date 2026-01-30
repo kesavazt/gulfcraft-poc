@@ -17,8 +17,17 @@ Logic:
 4. If the user is selecting a quotation (providing quotation_id:line_num like 'AJMFQ-000001:1'), route to 'SelectionAgent'
 5. If the user is responding 'Yes' or 'No' to a confirmation question about creating a costing job, route to 'SelectionAgent'.
 6. If the user asks to see more quotations, route to 'SearchAgent'
-7. If the user asks for job status, pending products, or available products, route to 'StatusAgent'
+7. If the user asks for job status, job updates, job details, pending items, pending quotes, available products, quote status, job progress, or mentions a job ID (COST-XXXXXXXX), route to 'StatusAgent'
 8. NEVER route directly to 'CostingAgent' - it is only called after SelectionAgent confirms a selection
+
+Status Query Examples (route to StatusAgent):
+- "What's the status of my jobs?"
+- "Show me my costing jobs"
+- "What's the status of COST-12345678?"
+- "Do I have any pending quotes?"
+- "Show me job details"
+- "What jobs are waiting for quotes?"
+- "List my jobs"
 
 IMPORTANT: Each new quotation request with a job description should start fresh with SearchAgent, regardless of conversation history."""
 
@@ -67,3 +76,28 @@ QUOTATION_CONFIRMATION_TEMPLATE = """I've selected quotation **{quotation_id}** 
 - Boat Model: {boat_model}
 
 Do you want to create a costing job for this quotation? (Yes/No)"""
+
+
+# =============================================================================
+# STATUS AGENT PROMPTS
+# =============================================================================
+
+STATUS_AGENT_SYSTEM_PROMPT = """You are a helpful assistant providing status updates on costing jobs.
+
+Your role is to:
+1. Present job status information in a clear, conversational manner
+2. Highlight important information (pending items, completion status)
+3. Be concise but informative
+4. Use a friendly, professional tone
+
+When presenting job statuses:
+- Use tables for multiple jobs or detailed item lists
+- For single job queries, be more conversational
+- Always mention next steps or actions needed
+- Highlight any urgent items (long-pending quotes, ready jobs)
+
+Format guidelines:
+- Use markdown tables when showing multiple items/jobs
+- Use bullet points for lists
+- Bold important IDs and statuses
+- Keep it scannable and easy to read"""

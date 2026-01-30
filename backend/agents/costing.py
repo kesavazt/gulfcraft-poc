@@ -14,6 +14,7 @@ from langchain_core.messages import AIMessage
 from core.state import AgentState
 from utils import tools
 from core import config
+from utils.langfuse_tracing import session_context, span_context, trace_agent
 
 logger = logging.getLogger(__name__)
 
@@ -138,6 +139,7 @@ def _build_response(job_id: str, quotation_id: str, line_num: int,
     return "\n".join(response_parts)
 
 
+@trace_agent
 def costing_node(state: AgentState):
     """
     Main costing workflow node.
@@ -165,11 +167,6 @@ def costing_node(state: AgentState):
     # Step 1: Get estimation lines
     estimation_items = _get_estimation_items(quotation_id, line_num)
     if not estimation_items:
-        tools._trace_tool(
-            name="costing_node",
-            input_payload=trace_input,
-            output_payload={"status": "no_estimation_items"}
-        )
         return {
             "messages": [AIMessage(content=f"No estimation lines found for quotation {quotation_id}, line {line_num}. This quotation may not have associated items.")]
         }
@@ -177,83 +174,57 @@ def costing_node(state: AgentState):
     # Step 2: Create costing request
     job_id = tools.create_costing_request(user_id, quotation_id, line_num, description)
     if not job_id:
-        tools._trace_tool(
-            name="costing_node",
-            input_payload=trace_input,
-            output_payload={"status": "create_costing_failed"}
-        )
         return {
             "messages": [AIMessage(content="Failed to create costing request. Please try again.")]
         }
-    tools._trace_tool(
-        name="costing_job_started",
-        input_payload={
-            **trace_input,
-            "threshold": threshold,
-            "description_len": len(description or "")
-        },
-        output_payload={"job_id": job_id}
-    )
 
-    # Step 3: Resolve prices
-    costing_items, pending_quote_items = _resolve_prices(estimation_items, threshold)
-    tools._trace_tool(
-        name="costing_job_pricing",
-        input_payload={"job_id": job_id},
-        output_payload={
-            "items": len(costing_items),
-            "pending_quotes": len(pending_quote_items)
+    # Wrap entire costing workflow in session context for job-level tracing
+    with session_context(
+        session_id=job_id,
+        metadata={
+            "quotation_id": quotation_id,
+            "line_num": line_num,
+            "user_id": user_id,
+            "threshold": threshold
         }
-    )
+    ):
+        # Step 3: Resolve prices
+        with span_context("resolve_prices", {"item_count": len(estimation_items)}) as price_span:
+            costing_items, pending_quote_items = _resolve_prices(estimation_items, threshold)
+            price_span.update(output={
+                "resolved": len(costing_items),
+                "pending_quotes": len(pending_quote_items)
+            })
 
-    # Step 4: Save costing line items
-    tools.save_costing_line_items(job_id, costing_items)
+        # Step 4: Save costing line items
+        with span_context("save_line_items", {"job_id": job_id, "count": len(costing_items)}):
+            tools.save_costing_line_items(job_id, costing_items)
 
-    # Step 5: Generate costing sheet
-    file_path = tools.create_costing_sheet_with_items(
-        job_id, costing_items, quotation_id, description
-    )
-    tools._trace_tool(
-        name="costing_job_sheet",
-        input_payload={"job_id": job_id},
-        output_payload={
-            "generated_file": file_path,
-            "has_pending": len(pending_quote_items) > 0
-        }
-    )
+        # Step 5: Generate costing sheet
+        with span_context("generate_sheet", {"job_id": job_id}) as sheet_span:
+            file_path = tools.create_costing_sheet_with_items(
+                job_id, costing_items, quotation_id, description
+            )
+            sheet_span.update(output={"file_path": file_path, "has_pending": len(pending_quote_items) > 0})
 
-    # Step 6: Send emails for pending items
-    if pending_quote_items:
-        _send_quote_emails(job_id, pending_quote_items)
-    tools._trace_tool(
-        name="costing_job_emails",
-        input_payload={"job_id": job_id},
-        output_payload={"emails_sent": len(pending_quote_items) > 0, "count": len(pending_quote_items)}
-    )
+        # Step 6: Send emails for pending items
+        if pending_quote_items:
+            with span_context("send_quote_emails", {"job_id": job_id, "count": len(pending_quote_items)}):
+                _send_quote_emails(job_id, pending_quote_items)
 
-    # Step 7: Set download URL
-    sharepoint_url = f"/costing-sheets/{file_path}" if file_path else None
+        # Step 7: Set download URL
+        sharepoint_url = f"/costing-sheets/{file_path}" if file_path else None
 
-    # Step 8: Update SharePoint
-    _update_sharepoint(job_id, description, costing_items, bool(pending_quote_items))
-    sp_status = "Awaiting Quote" if pending_quote_items else "Ready"
-    tools._trace_tool(
-        name="costing_job_sharepoint",
-        input_payload={"job_id": job_id},
-        output_payload={"status": sp_status}
-    )
+        # Step 8: Update SharePoint
+        sp_status = "Awaiting Quote" if pending_quote_items else "Ready"
+        with span_context("update_sharepoint", {"job_id": job_id, "status": sp_status}):
+            _update_sharepoint(job_id, description, costing_items, bool(pending_quote_items))
 
-    # Build response
-    response = _build_response(
-        job_id, quotation_id, line_num, costing_items, pending_quote_items,
-        file_path, sharepoint_url, threshold
-    )
-
-    tools._trace_tool(
-        name="costing_job_completed",
-        input_payload={**trace_input, "items": len(estimation_items), "pending": len(pending_quote_items)},
-        output_payload={"job_id": job_id, "emails_sent": len(pending_quote_items) > 0}
-    )
+        # Build response
+        response = _build_response(
+            job_id, quotation_id, line_num, costing_items, pending_quote_items,
+            file_path, sharepoint_url, threshold
+        )
 
     return {
         "messages": [AIMessage(content=response)],

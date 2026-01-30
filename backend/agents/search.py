@@ -10,10 +10,12 @@ from utils.llm import llm
 from utils.prompts import SEARCH_EXTRACTION_PROMPT, REFINEMENT_PROMPT
 from utils import tools
 from core import config
+from utils.langfuse_tracing import trace_agent
 import json
 import ast
 
 
+@trace_agent
 def search_node(state: AgentState):
     """
     Searches for similar quotations based on user's job description and boat model.
@@ -51,11 +53,6 @@ def search_node(state: AgentState):
             "current_top_k": new_top_k,
             "selected_quotation": None
         }
-        tools._trace_tool(
-            name="search_node_show_more",
-            input_payload={**trace_input, "last_boat_model": last_boat_model, "last_description": last_description},
-            output_payload={"results_count": len(search_results), "top_k": new_top_k}
-        )
         return result_payload
     else:
         # Extract description and boat model using LLM for new search
@@ -68,17 +65,7 @@ def search_node(state: AgentState):
         llm_with_tools = llm.bind_tools([tools.search_similar_quotations])
         try:
             result = llm_with_tools.invoke(extraction_prompt)
-            tools._trace_tool(
-                name="search_node_extract",
-                input_payload={**trace_input, "conversation_len": len(messages)},
-                output_payload={"tool_calls": bool(result.tool_calls)}
-            )
         except Exception as e:
-            tools._trace_tool(
-                name="search_node_extract",
-                input_payload={**trace_input, "conversation_len": len(messages)},
-                error=e
-            )
             raise
 
         # Extract parameters from tool call for future "show more" requests
@@ -104,6 +91,7 @@ def search_node(state: AgentState):
         }
 
 
+@trace_agent
 def refinement_node(state: AgentState):
     """
     Presents search results to user and asks for selection.
@@ -143,17 +131,7 @@ def refinement_node(state: AgentState):
     presentation_prompt = [("system", REFINEMENT_PROMPT.format(count=len(parsed_quotations)))]
     try:
         result = llm.invoke(presentation_prompt)
-        tools._trace_tool(
-            name="refinement_node",
-            input_payload={**trace_input, "results_count": len(parsed_quotations)},
-            output_payload={"awaiting_selection": True}
-        )
     except Exception as e:
-        tools._trace_tool(
-            name="refinement_node",
-            input_payload={**trace_input, "results_count": len(parsed_quotations)},
-            error=e
-        )
         raise
 
     return {

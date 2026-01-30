@@ -20,61 +20,7 @@ from langchain.tools import tool
 import requests
 
 # Optional Langfuse telemetry
-try:
-    from langfuse import Langfuse
-except ImportError:
-    Langfuse = None
-
-LANGFUSE_ENABLED = bool(
-    Langfuse
-    and config.LANGFUSE_PUBLIC_KEY
-    and config.LANGFUSE_SECRET_KEY
-)
-_langfuse_client = None
-
-
-def _get_langfuse_client():
-    """Lazily initialize Langfuse client if credentials are present."""
-    global _langfuse_client
-    if not LANGFUSE_ENABLED:
-        return None
-    if _langfuse_client is None:
-        try:
-            _langfuse_client = Langfuse(
-                public_key=config.LANGFUSE_PUBLIC_KEY,
-                secret_key=config.LANGFUSE_SECRET_KEY,
-                host=config.LANGFUSE_HOST,
-            )
-        except Exception as e:
-            print(f"[Langfuse] Init error: {e}")
-            _langfuse_client = None
-    return _langfuse_client
-
-
-def _trace_tool(name: str, input_payload: Any, output_payload: Any = None, error: Exception = None):
-    """Send a lightweight Langfuse trace for tool usage."""
-    client = _get_langfuse_client()
-    if not client:
-        return
-
-    metadata = {"source": "utils.tools"}
-    if error:
-        metadata["error"] = str(error)
-
-    try:
-        method = getattr(client, "trace", None) or getattr(client, "event", None)
-        if not callable(method):
-            return
-        method(
-            name=name,
-            input=input_payload,
-            output=output_payload,
-            metadata=metadata,
-        )
-    except Exception as e:  # Telemetry must never break runtime
-        if isinstance(e, AttributeError):
-            return
-        print(f"[Langfuse] Trace error ({name}): {e}")
+from utils.langfuse_tracing import trace_tool, trace_operation
 
 # --- SMTP Email Services ---
 GMAIL_SMTP_SERVER = "smtp.gmail.com"
@@ -82,6 +28,7 @@ GMAIL_SMTP_PORT = 587
 MS_SMTP_SERVER = "smtp.office365.com"
 MS_SMTP_PORT = 587
 
+@trace_tool
 def send_email(to: str, subject: str, body: str, service: str = "microsoft", attachment_path: str = None) -> bool:
     """
     Send an email using configured SMTP services, optionally with an attachment.
@@ -132,12 +79,6 @@ def send_email(to: str, subject: str, body: str, service: str = "microsoft", att
             )
         print(f"[SMTP] Attached file: {attachment_path}")
 
-    trace_input = {
-        "to": to,
-        "subject": subject,
-        "service": service
-    }
-
     try:
         print(f"[SMTP] Connecting to {service} server ({server_addr})...")
         server = smtplib.SMTP(server_addr, server_port)
@@ -146,19 +87,9 @@ def send_email(to: str, subject: str, body: str, service: str = "microsoft", att
         server.send_message(msg)
         server.quit()
         print(f"[SMTP] Email successfully sent to {to} via {service}")
-        _trace_tool(
-            name="send_email",
-            input_payload=trace_input,
-            output_payload={"status": "sent"}
-        )
         return True
     except Exception as e:
         print(f"[SMTP] Error sending via {service}: {e}")
-        _trace_tool(
-            name="send_email",
-            input_payload=trace_input,
-            error=e
-        )
         return False
 
 
@@ -190,6 +121,7 @@ def get_graph_access_token() -> Optional[str]:
         print(f"[GraphAPI] Auth Error: {e}")
         return None
 
+@trace_tool
 def create_sharepoint_list_item(
     job_id: str, 
     title: str, 
@@ -245,6 +177,7 @@ def create_sharepoint_list_item(
         return False
 
 
+@trace_tool
 def update_sharepoint_status(job_id: str, status: Optional[str] = None, price: Optional[float] = None) -> bool:
     """
     Updates an existing SharePoint list item (matched by JobID) with new status and/or price.
@@ -302,6 +235,7 @@ def update_sharepoint_status(job_id: str, status: Optional[str] = None, price: O
         return False
 
 
+@trace_tool
 def send_costing_ready_notification(job_id: str, description: str = "", sharepoint_url: Optional[str] = None, attachment_path: str = None):
     """Send a notification email when a costing job becomes Ready, optionally with attachment."""
     to_email = config.NOTIFICATION_EMAIL
@@ -323,11 +257,6 @@ def send_costing_ready_notification(job_id: str, description: str = "", sharepoi
     body = "\n".join(body_lines)
 
     sent = send_email(to_email, subject, body, service="microsoft", attachment_path=attachment_path)
-    _trace_tool(
-        name="send_costing_ready_notification",
-        input_payload={"job_id": job_id, "to": to_email, "has_attachment": bool(attachment_path)},
-        output_payload={"sent": sent}
-    )
     return sent
 
 # Deprecated/Mock functions removed or kept for reference if needed
@@ -368,29 +297,15 @@ def read_email_quotation(job_id: str) -> Optional[float]:
 
 # --- Search Tool ---
 
+@trace_tool
 def search_similar_quotations(job_description: str, boat_model: str, top_k: int = None) -> List[Dict[str, Any]]:
     """Searches for similar quotations in the DB"""
     if top_k is None:
         top_k = config.TOP_K_ITEMS
-    trace_input = {
-        "description": job_description,
-        "boat_model": boat_model,
-        "top_k": top_k
-    }
     try:
         result = hybrid_search(job_description, boat_model.upper(), top_k=top_k)
-        _trace_tool(
-            name="search_similar_quotations",
-            input_payload=trace_input,
-            output_payload={"results_count": len(result)}
-        )
         return result
     except Exception as e:
-        _trace_tool(
-            name="search_similar_quotations",
-            input_payload=trace_input,
-            error=e
-        )
         raise
 
 
@@ -409,6 +324,7 @@ def check_email_replies(job_id: str) -> List[Dict[str, Any]]:
 
 # --- Quotation Workflow Tools ---
 
+@trace_tool
 def get_estimation_lines(quotation_id: str, line_num: int) -> List[Dict[str, Any]]:
     """
     Retrieves all estimation lines for a given quotation_id and line_num.
@@ -444,6 +360,7 @@ def get_estimation_lines(quotation_id: str, line_num: int) -> List[Dict[str, Any
         session.close()
 
 
+@trace_tool
 def get_product_price(item_code: str) -> Dict[str, Any]:
     """
     Searches for an item in the Product table by item_code (std_item_code from EstimationLines).
@@ -478,6 +395,7 @@ def get_product_price(item_code: str) -> Dict[str, Any]:
         session.close()
 
 
+@trace_tool
 def create_costing_request(
     user_id: int,
     quotation_id: str,
@@ -502,32 +420,15 @@ def create_costing_request(
         session.add(req)
         session.commit()
         print(f"[CostingRequest] Created {job_id}")
-        _trace_tool(
-            name="create_costing_request",
-            input_payload={
-                "user_id": user_id,
-                "quotation_id": quotation_id,
-                "line_num": line_num
-            },
-            output_payload={"job_id": job_id}
-        )
         return job_id
     except Exception as e:
         print(f"DB Error: {e}")
-        _trace_tool(
-            name="create_costing_request",
-            input_payload={
-                "user_id": user_id,
-                "quotation_id": quotation_id,
-                "line_num": line_num
-            },
-            error=e
-        )
         return ""
     finally:
         session.close()
 
 
+@trace_tool
 def create_costing_sheet_with_items(
     job_id: str,
     items: List[Dict[str, Any]],
@@ -663,6 +564,7 @@ def create_costing_sheet_with_items(
     return output_path
 
 
+@trace_tool
 def regenerate_costing_sheet(job_id: str) -> Optional[str]:
     """
     Regenerates the costing sheet from the latest DB state for the given job.
@@ -707,6 +609,7 @@ def regenerate_costing_sheet(job_id: str) -> Optional[str]:
         session.close()
 
 
+@trace_tool
 def send_price_request_email(
     job_id: str,
     item_name: str,
@@ -815,6 +718,7 @@ def update_costing_sheet_with_price(
         session.close()
 
 
+@trace_tool
 def save_costing_line_items(job_id: str, items: List[Dict[str, Any]]) -> bool:
     """
     Saves the costing line items to the database.
@@ -969,6 +873,67 @@ def mark_quote_received(
         session.close()
 
 
+def mark_quote_received_by_id(
+    line_item_id: int,
+    price: float,
+    job_id: str = None
+) -> bool:
+    """
+    Marks a pending quote request as received and updates the price using line item ID.
+    This is more precise than name-based matching.
+
+    Args:
+        line_item_id: Database ID of the CostingLineItem
+        price: The received unit price
+        job_id: Optional job_id for logging and sheet regeneration
+
+    Returns:
+        True if successful, False otherwise
+    """
+    session = SessionLocal()
+    try:
+        # Update the line item price
+        line_item = session.query(CostingLineItem).filter(
+            CostingLineItem.id == line_item_id
+        ).first()
+
+        if not line_item:
+            print(f"[UpdatePrice] Line item {line_item_id} not found")
+            return False
+
+        line_item.unit_price = price
+        line_item.price_status = "resolved"
+        line_item.quote_received_at = datetime.now()
+
+        # Update any associated pending request
+        pending_req = session.query(PendingQuoteRequest).filter(
+            PendingQuoteRequest.costing_line_item_id == line_item_id,
+            PendingQuoteRequest.status == "pending"
+        ).first()
+
+        if pending_req:
+            pending_req.status = "received"
+            pending_req.received_price = price
+            pending_req.received_at = datetime.now()
+
+        session.commit()
+
+        print(f"[UpdatePrice] Updated line item {line_item_id} ({line_item.item_name}): {price}")
+
+        # Regenerate costing sheet if job_id provided
+        if job_id:
+            regenerate_costing_sheet(job_id)
+
+        return True
+
+    except Exception as e:
+        print(f"[UpdatePrice] DB Error: {e}")
+        session.rollback()
+        return False
+    finally:
+        session.close()
+
+
 def check_all_quotes_received(job_id: str) -> Dict[str, Any]:
     """
     Checks if all pending quotes for a job have been received.
@@ -1028,6 +993,7 @@ def check_all_quotes_received(job_id: str) -> Dict[str, Any]:
         session.close()
 
 
+@trace_tool
 def get_quotation_by_id(quotation_id: str, line_num: int = None) -> Optional[Dict[str, Any]]:
     """
     Retrieves a quotation directly from the QuotationLines table by its ID.

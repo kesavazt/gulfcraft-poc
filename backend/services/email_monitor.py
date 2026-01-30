@@ -9,8 +9,9 @@ import email
 import imaplib
 import threading
 from email.header import decode_header
+from email.message import Message
 from datetime import datetime
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, cast
 
 # Ensure the backend package is importable when running as a script
 BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -23,11 +24,19 @@ from core.database import (
     PendingQuoteRequest
 )
 from utils.tools import (
-    mark_quote_received, check_all_quotes_received,
+    mark_quote_received, mark_quote_received_by_id, check_all_quotes_received,
     create_costing_sheet_with_items
 )
 
+match_ocr_items_to_pending = None
+try:
+    from services.ocr_matcher import match_ocr_items_to_pending  # type: ignore[import-not-found]
+    OCR_MATCHER_AVAILABLE = True
+except ImportError:
+    OCR_MATCHER_AVAILABLE = False
+
 # Import pdf_extractor for OCR
+extract_line_items_from_pdf = None
 try:
     from pdf_extractor import extract_line_items_from_pdf
     PDF_EXTRACTOR_AVAILABLE = True
@@ -52,7 +61,7 @@ class EmailMonitor:
         self.running = False
         self._thread = None
         self.temp_dir = "temp_attachments"
-        self.imap_connection = None
+        self.imap_connection: Optional[imaplib.IMAP4_SSL] = None
 
         # Create temp directory for attachments
         os.makedirs(self.temp_dir, exist_ok=True)
@@ -152,8 +161,12 @@ class EmailMonitor:
         print(f"[EmailMonitor] {len(pending_requests)} pending quote requests in DB")
 
         try:
+            if not self.imap_connection:
+                return
+
+            conn = self.imap_connection
             # Select inbox
-            self.imap_connection.select("INBOX")
+            conn.select("INBOX")
 
             # Search for unread emails - look for replies to quotation requests
             # Search for emails containing "Quotation" OR "JOB-" in subject
@@ -170,7 +183,7 @@ class EmailMonitor:
 
             for pattern in search_patterns:
                 try:
-                    status, messages = self.imap_connection.search(None, pattern)
+                    status, messages = conn.search(None, pattern)
                     if status == "OK" and messages[0]:
                         for email_id in messages[0].split():
                             all_email_ids.add(email_id)
@@ -216,16 +229,26 @@ class EmailMonitor:
 
     def _process_email(self, email_id: bytes, pending_requests: List[Dict[str, Any]]):
         """Process a single email."""
+        if not self.imap_connection:
+            return
+        conn = self.imap_connection
+
         # Fetch the email
-        status, msg_data = self.imap_connection.fetch(email_id, "(RFC822)")
+        message_id = email_id.decode() if isinstance(email_id, bytes) else str(email_id)
+        status, msg_data = conn.fetch(message_id, "(RFC822)")
 
         if status != "OK":
             print(f"[EmailMonitor] Failed to fetch email {email_id}")
             return
 
+        if not msg_data or not msg_data[0]:
+            print(f"[EmailMonitor] Empty email data for {email_id}")
+            return
+
         # Parse the email
         raw_email = msg_data[0][1]
-        msg = email.message_from_bytes(raw_email)
+        raw_bytes = cast(bytes, raw_email)
+        msg = email.message_from_bytes(raw_bytes)
 
         # Decode subject
         subject = self._decode_header(msg["Subject"])
@@ -324,7 +347,7 @@ class EmailMonitor:
 
         return " ".join(result)
 
-    def _extract_pdf_attachments(self, msg: email.message.Message) -> List[str]:
+    def _extract_pdf_attachments(self, msg: Message) -> List[str]:
         """Extract PDF attachments from email."""
         pdf_paths = []
 
@@ -355,14 +378,14 @@ class EmailMonitor:
                             filepath = os.path.join(self.temp_dir, safe_filename)
 
                             with open(filepath, "wb") as f:
-                                f.write(payload)
+                                f.write(cast(bytes, payload))
 
                             pdf_paths.append(filepath)
                             print(f"[EmailMonitor] Saved PDF: {filepath}")
 
         return pdf_paths
 
-    def _get_email_body(self, msg: email.message.Message) -> str:
+    def _get_email_body(self, msg: Message) -> str:
         """Extract email body text."""
         body = ""
 
@@ -374,13 +397,13 @@ class EmailMonitor:
                     payload = part.get_payload(decode=True)
                     if payload:
                         charset = part.get_content_charset() or "utf-8"
-                        body = payload.decode(charset, errors="replace")
+                        body = cast(bytes, payload).decode(charset, errors="replace")
                         break
                 elif content_type == "text/html" and not body:
                     payload = part.get_payload(decode=True)
                     if payload:
                         charset = part.get_content_charset() or "utf-8"
-                        html_body = payload.decode(charset, errors="replace")
+                        html_body = cast(bytes, payload).decode(charset, errors="replace")
                         # Strip HTML tags
                         import re
                         body = re.sub(r'<[^>]+>', '', html_body)
@@ -388,14 +411,17 @@ class EmailMonitor:
             payload = msg.get_payload(decode=True)
             if payload:
                 charset = msg.get_content_charset() or "utf-8"
-                body = payload.decode(charset, errors="replace")
+                body = cast(bytes, payload).decode(charset, errors="replace")
 
         return body
 
     def _mark_as_read(self, email_id: bytes):
         """Mark an email as read (add SEEN flag)."""
         try:
-            self.imap_connection.store(email_id, "+FLAGS", "\\Seen")
+            if not self.imap_connection:
+                return
+            message_id = email_id.decode() if isinstance(email_id, bytes) else str(email_id)
+            self.imap_connection.store(message_id, "+FLAGS", "\\Seen")
         except Exception as e:
             print(f"[EmailMonitor] Error marking email as read: {e}")
 
@@ -459,6 +485,45 @@ class EmailMonitor:
 
     def _update_prices_from_extraction(self, job_id: str, item_name: str, extracted_data: List[Dict[str, Any]]):
         """Update database with extracted unit costs (no profit margin applied)."""
+        matched_items = None
+        if OCR_MATCHER_AVAILABLE and match_ocr_items_to_pending:
+            try:
+                matched_items = match_ocr_items_to_pending(
+                    job_id=job_id,
+                    extracted_items=extracted_data
+                )
+            except Exception as e:
+                print(f"[EmailMonitor] OCR matcher error: {e}")
+                matched_items = None
+
+        if matched_items:
+            for match in matched_items:
+                ocr_item = match.get("ocr_item") or {}
+                cost_price = ocr_item.get("unit_price") or ocr_item.get("price")
+                matched_id = match.get("matched_line_item_id")
+                confidence = match.get("confidence")
+                match_reason = match.get("match_reason", "")
+
+                if matched_id and cost_price:
+                    cost_price = float(cost_price)
+                    print(f"[EmailMonitor] LLM Match: Line item {matched_id} at confidence {confidence:.2f}")
+                    print(f"[EmailMonitor] Reason: {match_reason}")
+
+                    # Use precise ID-based update instead of name matching
+                    success = mark_quote_received_by_id(
+                        line_item_id=matched_id,
+                        price=cost_price,
+                        job_id=job_id
+                    )
+
+                    if success:
+                        print(f"[EmailMonitor] ✓ Updated price for {ocr_item.get('item_name', item_name)}: {cost_price}")
+
+                        status = check_all_quotes_received(job_id)
+                        if status["all_received"]:
+                            print(f"[EmailMonitor] All quotes received for {job_id}. Regenerating costing sheet.")
+                            self._regenerate_costing_sheet(job_id)
+            return
 
         for item in extracted_data:
             extracted_item_name = item.get("item_name", item_name)
@@ -488,7 +553,7 @@ class EmailMonitor:
         """
         Extract item names and prices from a PDF quotation using Mistral OCR.
         """
-        if PDF_EXTRACTOR_AVAILABLE:
+        if PDF_EXTRACTOR_AVAILABLE and extract_line_items_from_pdf:
             try:
                 # Use the pdf_extractor module
                 items = extract_line_items_from_pdf(pdf_path)
@@ -541,7 +606,7 @@ class EmailMonitor:
             )
 
             if file_path:
-                costing_req.status = "Completed"
+                costing_req.status = "Completed"  # type: ignore[assignment]
                 session.commit()
                 print(f"[EmailMonitor] Regenerated costing sheet: {file_path}")
 
@@ -617,6 +682,9 @@ def test_imap_connection():
     print("[Test] IMAP connection successful!")
 
     try:
+        if not monitor.imap_connection:
+            return False
+
         # Select inbox
         monitor.imap_connection.select("INBOX")
 
@@ -630,9 +698,10 @@ def test_imap_connection():
             print(f"[Test] Found {len(email_ids)} total emails. Showing last {len(recent_ids)}:")
 
             for email_id in reversed(recent_ids):
-                status, msg_data = monitor.imap_connection.fetch(email_id, "(RFC822.HEADER)")
-                if status == "OK":
-                    header = email.message_from_bytes(msg_data[0][1])
+                message_id = email_id.decode() if isinstance(email_id, bytes) else str(email_id)
+                status, msg_data = monitor.imap_connection.fetch(message_id, "(RFC822.HEADER)")
+                if status == "OK" and msg_data and msg_data[0]:
+                    header = email.message_from_bytes(cast(bytes, msg_data[0][1]))
                     subject = monitor._decode_header(header["Subject"])[:50]
                     from_addr = monitor._decode_header(header["From"])[:40]
                     print(f"  - From: {from_addr}... | Subject: {subject}...")

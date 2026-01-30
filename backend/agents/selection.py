@@ -10,6 +10,7 @@ from core.state import AgentState
 from utils.llm import llm
 from utils.prompts import SELECTION_EXTRACTION_PROMPT, QUOTATION_CONFIRMATION_TEMPLATE
 from utils import tools
+from utils.langfuse_tracing import trace_agent
 
 
 def _extract_description_override(user_message: str) -> str:
@@ -118,6 +119,7 @@ def _try_llm_extraction(user_message: str, similar_quotations: list):
     return tools.get_quotation_by_id(quotation_id, line_num)
 
 
+@trace_agent
 def selection_node(state: AgentState):
     """
     Handles user's quotation selection and extracts quotation details.
@@ -139,11 +141,6 @@ def selection_node(state: AgentState):
     # Check for pending confirmation first
     confirmation_result = _check_confirmation(user_message, state)
     if confirmation_result:
-        tools._trace_tool(
-            name="selection_node_confirmation",
-            input_payload=trace_input,
-            output_payload={"next": confirmation_result.get("next")}
-        )
         return confirmation_result
     
     # Try selection methods in order of specificity
@@ -153,19 +150,9 @@ def selection_node(state: AgentState):
     selected = selected or _try_llm_extraction(user_message, similar_quotations)
 
     if selected:
-        # Fetch detailed estimation lines for the selected quotation
         quotation_id = selected.get('quotation_id')
         line_num = selected.get('line_num')
         estimation_lines = tools.get_estimation_lines(quotation_id, line_num)
-        tools._trace_tool(
-            name="selection_node_match",
-            input_payload=trace_input,
-            output_payload={
-                "quotation_id": quotation_id,
-                "line_num": line_num,
-                "items_count": len(estimation_lines)
-            }
-        )
         
         details_text = ""
         total_price = selected.get('price', 0) or selected.get('sales_price', 0)
@@ -200,11 +187,6 @@ Yes, description: <your new description>"""
             "next": "FINISH" # Wait for user confirmation
         }
     else:
-        tools._trace_tool(
-            name="selection_node_no_match",
-            input_payload=trace_input,
-            output_payload={"matched": False}
-        )
         return {
             "messages": [AIMessage(content="I couldn't identify your selection. Please select one of the options by number (e.g., '1') or provide the Quotation ID.")],
             "awaiting_selection": True,

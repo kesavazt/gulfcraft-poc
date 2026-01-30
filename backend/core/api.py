@@ -11,7 +11,7 @@ import bcrypt
 import os
 import glob as glob_module
 from core import config
-from core.database import SessionLocal, User, Conversation, Message, CostingRequest, CostingLineItem, init_db
+from core.database import SessionLocal, User, Conversation, Message, CostingRequest, CostingLineItem, Product, EstimationLines, init_db
 from main import invoke_agent
 from utils import tools
 
@@ -200,7 +200,8 @@ def chat(request: ChatRequest, current_user: User = Depends(get_current_user), d
         user_id=current_user.id,
         threshold=config.PRICE_THRESHOLD,
         conversation_history=conversation_history,
-        session_state=request.state
+        session_state=request.state,
+        conversation_id=f"conv_{conversation.id}"  # Maintain consistent conversation trace
     )
 
 
@@ -239,8 +240,128 @@ def get_requests(current_user: User = Depends(get_current_user), db: Session = D
         requests = db.query(CostingRequest).filter(CostingRequest.user_id == current_user.id).all()
     return requests
 
-@app.get("/products/search", response_model=List[ProductSchema])
+class ItemSearchResult(BaseModel):
+    """Enhanced search result combining item info from multiple sources."""
+    item_code: Optional[str] = None
+    item_name: str
+    unit_cost: Optional[float] = None
+    vendor_email: Optional[str] = None
+    source: str  # "product" or "estimation"
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+@app.get("/products/search", response_model=List[ItemSearchResult])
 def search_products(q: str, db: Session = Depends(get_db)):
+    """
+    Search for items by name or code across Products and EstimationLines tables.
+    Returns combined results suitable for dropdown selection.
+    """
+    if not q or len(q) < 2:
+        return []
+
+    search_pattern = f"%{q}%"
+    results = []
+    seen_items = set()  # Track unique item_code to avoid duplicates
+
+    # Search in Products table by item_number (code)
+    products = db.query(Product).filter(
+        Product.item_number.ilike(search_pattern)
+    ).limit(20).all()
+
+    for product in products:
+        item_key = product.item_number
+        if item_key not in seen_items:
+            results.append({
+                "item_code": product.item_number,
+                "item_name": product.item_number,  # Use code as name since no name field
+                "unit_cost": float(product.unit_cost) if product.unit_cost else None,
+                "vendor_email": product.vendor_email,
+                "source": "product"
+            })
+            seen_items.add(item_key)
+
+    # Search in EstimationLines by item_name (actual name/description)
+    estimation_items = db.query(EstimationLines).filter(
+        EstimationLines.item_name.ilike(search_pattern)
+    ).limit(20).all()
+
+    for item in estimation_items:
+        item_key = item.std_item_code or item.item_name
+        if item_key not in seen_items:
+            # Try to get pricing from Product table
+            product_price = None
+            vendor_email = None
+            if item.std_item_code:
+                product = db.query(Product).filter(
+                    Product.item_number == item.std_item_code
+                ).first()
+                if product:
+                    product_price = float(product.unit_cost) if product.unit_cost else None
+                    vendor_email = product.vendor_email
+
+            results.append({
+                "item_code": item.std_item_code,
+                "item_name": item.item_name,
+                "unit_cost": product_price or (float(item.sales_price) if item.sales_price else None),
+                "vendor_email": vendor_email or config.VENDOR_DEFAULT_EMAIL,
+                "source": "estimation"
+            })
+            seen_items.add(item_key)
+
+    # Search in EstimationLines by item_code as well
+    if not results or len(results) < 10:
+        estimation_by_code = db.query(EstimationLines).filter(
+            EstimationLines.std_item_code.ilike(search_pattern)
+        ).limit(20).all()
+
+        for item in estimation_by_code:
+            item_key = item.std_item_code or item.item_name
+            if item_key not in seen_items:
+                product_price = None
+                vendor_email = None
+                if item.std_item_code:
+                    product = db.query(Product).filter(
+                        Product.item_number == item.std_item_code
+                    ).first()
+                    if product:
+                        product_price = float(product.unit_cost) if product.unit_cost else None
+                        vendor_email = product.vendor_email
+
+                results.append({
+                    "item_code": item.std_item_code,
+                    "item_name": item.item_name,
+                    "unit_cost": product_price or (float(item.sales_price) if item.sales_price else None),
+                    "vendor_email": vendor_email or config.VENDOR_DEFAULT_EMAIL,
+                    "source": "estimation"
+                })
+                seen_items.add(item_key)
+
+    # Sort by relevance (exact matches first, then partial matches)
+    def sort_key(item):
+        name_lower = item["item_name"].lower()
+        code_lower = (item["item_code"] or "").lower()
+        q_lower = q.lower()
+
+        # Exact match gets highest priority
+        if name_lower == q_lower or code_lower == q_lower:
+            return 0
+        # Starts with query gets second priority
+        elif name_lower.startswith(q_lower) or code_lower.startswith(q_lower):
+            return 1
+        # Contains query gets third priority
+        else:
+            return 2
+
+    results.sort(key=sort_key)
+
+    # Return top 15 results
+    return results[:15]
+
+
+@app.get("/products/search/legacy", response_model=List[ProductSchema])
+def search_products_legacy(q: str, db: Session = Depends(get_db)):
+    """Legacy endpoint for backward compatibility."""
     if not q:
         return []
     products = db.query(Product).filter(Product.item_number.ilike(f"%{q}%")).limit(10).all()

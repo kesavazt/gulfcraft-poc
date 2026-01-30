@@ -50,12 +50,14 @@ DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./gulfcraft.db")
 # Example Postgres URL: "postgresql+psycopg2://user:password@localhost:5432/gulfcraft"
 
 # --- Embedding Config ---
-OPENAI_API_TYPE = os.getenv("OPENAI_API_TYPE", "openai") # 'openai' or 'azure'
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "mock_openai_key")
-OPENAI_API_VERSION = os.getenv("OPENAI_API_VERSION", "2023-05-15")
-AZURE_OPENAI_ENDPOINT = os.getenv("AZURE_OPENAI_ENDPOINT", "gtech.openai.azure.com")
+OPENAI_API_TYPE = os.getenv("OPENAI_API_TYPE", "azure") # 'openai' or 'azure'
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")  # Used for Azure OpenAI
+OPENAI_API_VERSION = os.getenv("OPENAI_API_VERSION", "2024-08-01-preview")
+AZURE_OPENAI_ENDPOINT = os.getenv("AZURE_OPENAI_ENDPOINT", "https://gtech.openai.azure.com")
+AZURE_OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")  # Use OPENAI_API_KEY for Azure
 AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME = os.getenv("AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME", "text-embedding-3-small")
 AZURE_OPENAI_CHAT_DEPLOYMENT_NAME = os.getenv("AZURE_OPENAI_CHAT_DEPLOYMENT_NAME", "gpt-4.1")
+AZURE_OPENAI_MATCHER_DEPLOYMENT_NAME = os.getenv("AZURE_OPENAI_MATCHER_DEPLOYMENT_NAME", os.getenv("AZURE_OPENAI_CHAT_DEPLOYMENT_NAME", "gpt-4.1-mini"))  # For OCR matching, defaults to chat deployment
 EMBEDDING_MODEL = "text-embedding-3-small"
 
 # --- Security ---

@@ -10,6 +10,7 @@ from core.state import AgentState
 from utils.llm import llm
 from utils.prompts import SUPERVISOR_SYSTEM_PROMPT
 from utils import tools
+from utils.langfuse_tracing import trace_agent
 
 
 # --- Supervisor Configuration ---
@@ -49,6 +50,7 @@ _prompt = ChatPromptTemplate.from_messages([
 _supervisor_chain = _prompt | llm.with_structured_output(ROUTE_FUNCTION_DEF)
 
 
+@trace_agent
 def supervisor_node(state: AgentState):
     """
     Supervisor node that routes user requests to appropriate worker agents.
@@ -59,17 +61,7 @@ def supervisor_node(state: AgentState):
     trace_input = {"messages_count": len(state.get("messages", []))}
     try:
         result = _supervisor_chain.invoke(state)
-        tools._trace_tool(
-            name="supervisor_node",
-            input_payload=trace_input,
-            output_payload={"next": result.get("next")}
-        )
     except Exception as e:
-        tools._trace_tool(
-            name="supervisor_node",
-            input_payload=trace_input,
-            error=e
-        )
         raise
 
     # If it's a greeting or info request, add the response to messages
