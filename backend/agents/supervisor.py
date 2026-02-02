@@ -16,7 +16,17 @@ from utils.langfuse_tracing import trace_agent
 # --- Supervisor Configuration ---
 
 # CostingAgent is not directly routable from Supervisor - only via SelectionAgent
-ROUTABLE_MEMBERS = ["SearchAgent", "SelectionAgent", "StatusAgent"]
+ROUTABLE_MEMBERS = [
+    "SearchAgent",
+    "SelectionAgent",
+    "StatusAgent",
+    "EditJobAgent",
+    "QuoteManagementAgent",
+    "JobLifecycleAgent",
+    "PricingAdvisorAgent",
+    "ExplainerAgent",
+    "VendorInfoAgent"
+]
 OPTIONS = ["FINISH"] + ROUTABLE_MEMBERS
 
 ROUTE_FUNCTION_DEF = {

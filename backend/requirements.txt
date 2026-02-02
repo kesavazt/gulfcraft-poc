@@ -1,0 +1,17 @@
+fastapi
+uvicorn
+gunicorn
+langgraph
+langchain
+langchain-core
+langchain-openai
+langfuse
+pydantic
+sqlalchemy
+pgvector
+psycopg2-binary
+python-jose[cryptography]
+python-multipart
+requests
+python-dotenv
+openpyxl

@@ -124,6 +124,18 @@ class CostingLineItem(Base):
     quote_requested_at = Column(DateTime(timezone=True), nullable=True)
     quote_received_at = Column(DateTime(timezone=True), nullable=True)
 
+    # Price tracking fields - from estimation lines
+    estimation_quantity = Column(Integer, nullable=True)  # Quantity from estimation
+    estimation_average_price = Column(Float, nullable=True)  # Average price from estimation
+    estimation_last_purchase_price = Column(Float, nullable=True)  # Last purchase price from estimation
+    estimation_sales_price = Column(Float, nullable=True)  # Sales price from estimation
+
+    # Price tracking fields - from products table lookup
+    products_table_price = Column(Float, nullable=True)  # Unit cost from products table
+
+    # Price source indicator
+    price_source = Column(String, nullable=True)  # 'products', 'quotation', 'manual', 'pending', 'labour'
+
     costing_request = relationship("CostingRequest", back_populates="line_items")
 
 

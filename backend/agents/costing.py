@@ -27,7 +27,7 @@ def _get_estimation_items(quotation_id: str, line_num: int):
 def _resolve_prices(estimation_items: list, threshold: float):
     """
     Resolve prices for all items.
-    
+
     Returns:
         tuple: (costing_items, pending_quote_items)
     """
@@ -44,23 +44,37 @@ def _resolve_prices(estimation_items: list, threshold: float):
             "item_code": item.get("item_code"),
             "item_type": item_type,
             "quantity": item.get("quantity", 1),
-            "is_labour": is_labour
+            "is_labour": is_labour,
+            # Capture estimation line data
+            "estimation_quantity": item.get("quantity", 1),
+            "estimation_average_price": item.get("average_price"),
+            "estimation_last_purchase_price": item.get("last_purchase_price"),
+            "estimation_sales_price": item.get("sales_price")
         }
 
         if is_labour:
             costing_item["unit_price"] = item.get("sales_price")
             costing_item["price_status"] = "resolved"
             costing_item["vendor_email"] = None
+            costing_item["price_source"] = "labour"
+            costing_item["products_table_price"] = None
         else:
             item_code = item.get("item_code", "")
             product_info = tools.get_product_price(item_code)
-            costing_item["unit_price"] = product_info.get("unit_cost")
+            products_price = product_info.get("unit_cost")
+
+            # Store products table price for tracking
+            costing_item["products_table_price"] = products_price
             costing_item["vendor_email"] = product_info.get("vendor_email", "vinod.ihava@gulfcraftinc.com")
-            
-            if product_info.get("unit_cost") is not None and product_info.get("unit_cost") <= threshold:
+
+            if products_price is not None and products_price <= threshold:
+                costing_item["unit_price"] = products_price
                 costing_item["price_status"] = "resolved"
+                costing_item["price_source"] = "products"
             else:
+                costing_item["unit_price"] = None
                 costing_item["price_status"] = "pending_quote"
+                costing_item["price_source"] = "pending"
                 pending_quote_items.append(costing_item)
 
         costing_items.append(costing_item)

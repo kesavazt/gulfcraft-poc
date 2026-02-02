@@ -1,0 +1,9 @@
+<step title="Incoming Request" date="2026-01-30T10:28:02.621" instance="47baf5" url="/api/deployments/latest" method="GET" type="request" pid="770,1,25" Accept="*/*" Host="gc-backend-hmhzddhpfwbpd8gh.scm.uaenorth-01.azurewebsites.net" User-Agent="AZURECLI/2.74.0 (MSI)" Accept-Encoding="gzip, deflate" Authorization="Bea..." x-ms-client-request-id="54907f12-fdc6-11f0-8665-00090ffe0001" X-ARR-LOG-ID="54907f12-fdc6-11f0-8665-00090ffe0001" CLIENT-IP="5.30.65.92:53732" X-SITE-DEPLOYMENT-ID="gc-backend" WAS-DEFAULT-HOSTNAME="gc-backend-hmhzddhpfwbpd8gh.scm.uaenorth-01.azurewebsites.net" X-Forwarded-Proto="https" X-AppService-Proto="https" X-Forwarded-TlsVersion="1.3" X-WAWS-Unencoded-URL="/api/deployments/latest" X-Client-IP="5.30.65.92" X-Client-Port="53732" >
+  <step title="Cleanup Xml Logs" date="2026-01-30T10:28:02.639" /><!-- duration: 13ms -->
+  <step title="DeploymentService.GetResult" date="2026-01-30T10:28:02.693" >
+    <step title="DeploymentService.GetLatestDeployment" date="2026-01-30T10:28:02.710" >
+      <step title="DeploymentManager.GetResults" date="2026-01-30T10:28:02.721" /><!-- duration: 629ms -->
+    </step><!-- duration: 689ms -->
+  </step><!-- duration: 718ms -->
+  <step title="Outgoing response" date="2026-01-30T10:28:03.420" type="response" statusCode="202" statusText="Accepted" /><!-- duration: 12ms -->
+</step><!-- duration: 830ms -->

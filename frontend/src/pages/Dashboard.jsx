@@ -175,8 +175,8 @@ export default function Dashboard() {
         try {
             setActionLoading(true);
             const itemData = product ? {
-                item_name: `Product ${product.item_number}`,
-                item_code: product.item_number,
+                item_name: product.item_name,
+                item_code: product.item_code,
                 unit_price: product.unit_cost,
                 item_type: 'Item',
                 vendor_email: product.vendor_email
@@ -603,17 +603,19 @@ export default function Dashboard() {
                                     />
                                     {searchResults.length > 0 && (
                                         <div className="absolute z-10 mt-1 w-full bg-white shadow-xl max-h-60 rounded-xl py-1 text-base ring-1 ring-black ring-opacity-5 overflow-auto focus:outline-none sm:text-sm border border-gray-100 animate-in fade-in slide-in-from-top-1">
-                                            {searchResults.map((product) => (
+                                            {searchResults.map((product, idx) => (
                                                 <button
-                                                    key={product.id}
+                                                    key={idx}
                                                     onClick={() => handleAddItem(selectedJob.job_id, product)}
-                                                    className="w-full text-left cursor-pointer hover:bg-brand-50 px-4 py-2 transition-colors border-b last:border-0 border-gray-50"
+                                                    className="w-full text-left cursor-pointer hover:bg-brand-50 px-4 py-3 transition-colors border-b last:border-0 border-gray-50"
                                                 >
-                                                    <div className="flex justify-between">
-                                                        <span className="font-semibold text-gray-900">{product.item_number}</span>
-                                                        <span className="text-brand-600 font-bold">{product.unit_cost?.toLocaleString()} AED</span>
+                                                    <div className="flex justify-between items-start gap-2">
+                                                        <div className="flex-1 min-w-0">
+                                                            <div className="font-semibold text-gray-900 truncate">{product.item_name}</div>
+                                                            <div className="text-xs text-gray-500 mt-0.5 font-mono">{product.item_code || 'No code'}</div>
+                                                        </div>
+                                                        <div className="text-brand-600 font-bold whitespace-nowrap">{product.unit_cost?.toLocaleString() || '0'} AED</div>
                                                     </div>
-                                                    <div className="text-xs text-gray-500 mt-0.5">{product.vendor_email || 'No vendor email'}</div>
                                                 </button>
                                             ))}
                                         </div>
@@ -641,15 +643,20 @@ export default function Dashboard() {
                                             <tr>
                                                 <th className="px-4 py-3 text-left font-semibold text-gray-500">Item</th>
                                                 <th className="px-4 py-3 text-left font-semibold text-gray-500">Code</th>
-                                                <th className="px-4 py-3 text-center font-semibold text-gray-500" style={{ width: '80px' }}>Qty</th>
-                                                <th className="px-4 py-3 text-right font-semibold text-gray-500">Unit Price (AED)</th>
-                                                <th className="px-4 py-3 text-center font-semibold text-gray-500">Status</th>
-                                                <th className="px-4 py-3 text-right font-semibold text-gray-500" style={{ width: '50px' }}></th>
+                                                <th className="px-3 py-3 text-center font-semibold text-gray-500 text-xs" style={{ width: '70px' }}>Est. Qty</th>
+                                                <th className="px-3 py-3 text-right font-semibold text-gray-500 text-xs" style={{ width: '90px' }}>Est. Price</th>
+                                                <th className="px-3 py-3 text-center font-semibold text-gray-500" style={{ width: '70px' }}>Qty</th>
+                                                <th className="px-3 py-3 text-right font-semibold text-gray-500 text-xs" style={{ width: '95px' }}>Products Price</th>
+                                                <th className="px-3 py-3 text-right font-semibold text-gray-500">Unit Price</th>
+                                                <th className="px-3 py-3 text-center font-semibold text-gray-500 text-xs" style={{ width: '90px' }}>Source</th>
+                                                <th className="px-3 py-3 text-center font-semibold text-gray-500 text-xs">Status</th>
+                                                <th className="px-3 py-3 text-right font-semibold text-gray-500" style={{ width: '50px' }}></th>
                                             </tr>
                                         </thead>
                                         <tbody className="divide-y divide-gray-200 bg-white">
                                             {selectedJob.line_items?.map((item) => (
                                                 <tr key={item.id} className="hover:bg-gray-50/50 group">
+                                                    {/* Item Name */}
                                                     <td className="px-4 py-3">
                                                         {editingItemId === item.id && editType === 'name' ? (
                                                             <div className="flex items-center gap-1">
@@ -669,6 +676,7 @@ export default function Dashboard() {
                                                             </div>
                                                         )}
                                                     </td>
+                                                    {/* Item Code */}
                                                     <td className="px-4 py-3">
                                                         {editingItemId === item.id && editType === 'code' ? (
                                                             <div className="flex items-center gap-1">
@@ -688,7 +696,20 @@ export default function Dashboard() {
                                                             </div>
                                                         )}
                                                     </td>
-                                                    <td className="px-4 py-3 text-center">
+                                                    {/* Estimation Quantity */}
+                                                    <td className="px-3 py-3 text-center">
+                                                        <span className="text-gray-500 text-xs" title="Quantity from estimation">
+                                                            {item.estimation_quantity ?? '-'}
+                                                        </span>
+                                                    </td>
+                                                    {/* Estimation Price */}
+                                                    <td className="px-3 py-3 text-right">
+                                                        <span className="text-gray-500 text-xs" title="Last purchase price from estimation">
+                                                            {item.estimation_last_purchase_price ? item.estimation_last_purchase_price.toFixed(2) : (item.estimation_average_price ? item.estimation_average_price.toFixed(2) : '-')}
+                                                        </span>
+                                                    </td>
+                                                    {/* Current Quantity (editable) */}
+                                                    <td className="px-3 py-3 text-center">
                                                         {editingItemId === item.id && editType === 'quantity' ? (
                                                             <div className="flex items-center gap-1">
                                                                 <input
@@ -702,12 +723,19 @@ export default function Dashboard() {
                                                             </div>
                                                         ) : (
                                                             <div className="flex items-center justify-center gap-1 group/item">
-                                                                <span className="text-gray-600">{item.quantity}</span>
+                                                                <span className="text-gray-900 font-medium">{item.quantity}</span>
                                                                 <button onClick={() => { setEditingItemId(item.id); setEditType('quantity'); setEditValue(item.quantity.toString()); }} className="p-1 text-gray-300 hover:text-brand-500 opacity-0 group-hover/item:opacity-100 transition-all"><Edit2 className="h-3 w-3" /></button>
                                                             </div>
                                                         )}
                                                     </td>
-                                                    <td className="px-4 py-3 text-right">
+                                                    {/* Products Table Price */}
+                                                    <td className="px-3 py-3 text-right">
+                                                        <span className="text-gray-600 text-xs" title="Price from products table lookup">
+                                                            {item.products_table_price ? item.products_table_price.toFixed(2) : '-'}
+                                                        </span>
+                                                    </td>
+                                                    {/* Unit Price (editable) */}
+                                                    <td className="px-3 py-3 text-right">
                                                         {editingItemId === item.id && editType === 'price' ? (
                                                             <div className="flex items-center justify-end gap-1">
                                                                 <input
@@ -728,13 +756,27 @@ export default function Dashboard() {
                                                             </div>
                                                         )}
                                                     </td>
-                                                    <td className="px-4 py-3 text-center">
+                                                    {/* Price Source */}
+                                                    <td className="px-3 py-3 text-center">
+                                                        <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase whitespace-nowrap ${
+                                                            item.price_source === 'products' ? 'bg-blue-100 text-blue-700' :
+                                                            item.price_source === 'quotation' ? 'bg-purple-100 text-purple-700' :
+                                                            item.price_source === 'manual' ? 'bg-orange-100 text-orange-700' :
+                                                            item.price_source === 'labour' ? 'bg-indigo-100 text-indigo-700' :
+                                                            'bg-gray-100 text-gray-700'
+                                                        }`}>
+                                                            {item.price_source || 'N/A'}
+                                                        </span>
+                                                    </td>
+                                                    {/* Status */}
+                                                    <td className="px-3 py-3 text-center">
                                                         <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${item.price_status === 'resolved' ? 'bg-green-100 text-green-700' : 'bg-yellow-100 text-yellow-700'
                                                             }`}>
                                                             {item.price_status}
                                                         </span>
                                                     </td>
-                                                    <td className="px-4 py-3 text-right">
+                                                    {/* Delete Button */}
+                                                    <td className="px-3 py-3 text-right">
                                                         <button
                                                             onClick={() => handleDeleteItem(selectedJob.job_id, item.id)}
                                                             className="p-1.5 text-gray-300 hover:text-red-500 hover:bg-red-50 rounded transition-all opacity-0 group-hover:opacity-100"
@@ -747,11 +789,11 @@ export default function Dashboard() {
                                         </tbody>
                                         <tfoot className="bg-gray-50/50 font-bold">
                                             <tr>
-                                                <td colSpan="3" className="px-4 py-4 text-right text-gray-500 uppercase tracking-wider text-xs">Total Estimated Cost</td>
-                                                <td className="px-4 py-4 text-right text-brand-900 text-lg">
+                                                <td colSpan="6" className="px-4 py-4 text-right text-gray-500 uppercase tracking-wider text-xs">Total Estimated Cost</td>
+                                                <td className="px-3 py-4 text-right text-brand-900 text-lg">
                                                     {(selectedJob.line_items?.reduce((acc, item) => acc + (item.unit_price || 0) * (item.quantity || 1), 0) || 0).toFixed(2)} AED
                                                 </td>
-                                                <td colSpan="2"></td>
+                                                <td colSpan="3"></td>
                                             </tr>
                                         </tfoot>
                                     </table>

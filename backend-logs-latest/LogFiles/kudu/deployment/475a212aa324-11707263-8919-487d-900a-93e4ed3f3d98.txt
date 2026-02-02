@@ -1,0 +1,24 @@
+2026-01-30T09:15:13  Fetching changes.
+2026-01-30T09:15:13    Starting  LocalZipHandler
+2026-01-30T09:15:13    Cleaning up temp folders from previous zip deployments and extracting pushed zip file /tmp/zipdeploy/05b451f0-1c1e-4ba3-833c-7faf1e45df56.zip (0.45 MB) to /tmp/zipdeploy/extracted
+2026-01-30T09:15:18  Updating submodules.
+2026-01-30T09:15:18  Preparing deployment for commit id 'cf76eeb8-c'.
+2026-01-30T09:15:18  PreDeployment: context.CleanOutputPath False
+2026-01-30T09:15:18  PreDeployment: context.OutputPath /home/site/wwwroot
+2026-01-30T09:15:19  Repository path is /tmp/zipdeploy/extracted
+2026-01-30T09:15:19  Oryx-Build: Running kudu sync...
+2026-01-30T09:15:19    Command: kudusync -v 50 -f /tmp/zipdeploy/extracted -t /home/site/wwwroot -n /home/site/deployments/cf76eeb8-ca40-449f-8a99-b32d6d86a4e6/manifest -p /opt/Kudu/Scripts/firstDeploymentManifest -i ".git;.hg;.deployment;.deploy.sh"
+2026-01-30T09:15:19    Kudu sync from: '/tmp/zipdeploy/extracted' to: '/home/site/wwwroot'
+2026-01-30T09:15:19    Copying file: 'backend\__pycache__\agents.cpython-311.pyc'
+2026-01-30T09:15:19    Copying file: 'backend\__pycache__\api.cpython-311.pyc'
+2026-01-30T09:15:19    Copying file: 'backend\__pycache__\config.cpython-311.pyc'
+2026-01-30T09:15:19    Copying file: 'backend\__pycache__\database.cpython-311.pyc'
+2026-01-30T09:15:19    Error: EINVAL: invalid argument, open '/home/site/wwwroot/backend\__pycache__\agents.cpython-311.pyc'
+2026-01-30T09:15:19    
+/opt/Kudu/Scripts/starter.sh kudusync -v 50 -f /tmp/zipdeploy/extracted -t /home/site/wwwroot -n /home/site/deployments/cf76eeb8-ca40-449f-8a99-b32d6d86a4e6/manifest -p /opt/Kudu/Scripts/firstDeploymentManifest -i ".git;.hg;.deployment;.deploy.sh"
+2026-01-30T09:15:19  
+2026-01-30T09:15:19  
+2026-01-30T09:15:19  Generating summary of Oryx build
+2026-01-30T09:15:19  Deployment Log file does not exist in /tmp/oryx-build.log
+2026-01-30T09:15:20  The logfile at /tmp/oryx-build.log is empty. Unable to fetch the summary of build
+2026-01-30T09:15:20  Deployment Failed. deployer = OneDeploy deploymentPath = OneDeploy

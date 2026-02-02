@@ -471,13 +471,20 @@ def create_costing_sheet_with_items(
     ws['A5'] = "Profit Margin:"
     ws['B5'] = f"{(profit_margin - 1) * 100:.0f}%" if profit_margin > 1 else f"{profit_margin * 100:.0f}%"
 
-    # Column headers - added Selling Price columns
-    headers = ["Item Name", "Item Code", "Qty", "Unit Cost", "Total Cost", "Unit Sell", "Total Sell", "Status"]
+    # Column headers - added estimation tracking and price source columns
+    headers = [
+        "Item Name", "Item Code",
+        "Est. Qty", "Est. Price",  # Estimation line data
+        "Qty", "Products Price",   # Current quantity and products table lookup
+        "Unit Cost", "Total Cost",  # Final cost being used
+        "Unit Sell", "Total Sell",  # Selling prices
+        "Price Source", "Status"    # Source and status tracking
+    ]
     for col, header in enumerate(headers, start=1):
         cell = ws.cell(row=7, column=col, value=header)
         cell.font = header_font
         # Use green fill for selling price columns
-        if col in [6, 7]:
+        if col in [9, 10]:  # Unit Sell and Total Sell columns
             cell.fill = profit_fill
         else:
             cell.fill = header_fill
@@ -491,34 +498,51 @@ def create_costing_sheet_with_items(
     row = 8
 
     for item in items:
+        # Column 1-2: Item Name and Code
         ws.cell(row=row, column=1, value=item.get("item_name", "")).border = thin_border
         ws.cell(row=row, column=2, value=item.get("item_code", "")).border = thin_border
-        ws.cell(row=row, column=3, value=item.get("quantity", 1)).border = thin_border
+
+        # Column 3-4: Estimation data (Previous Qty and Price)
+        est_qty = item.get("estimation_quantity")
+        est_price = item.get("estimation_last_purchase_price") or item.get("estimation_average_price")
+        ws.cell(row=row, column=3, value=est_qty if est_qty is not None else "N/A").border = thin_border
+        ws.cell(row=row, column=4, value=round(est_price, 2) if est_price is not None else "N/A").border = thin_border
+
+        # Column 5-6: Current Qty and Products Table Price
+        quantity = item.get("quantity", 1)
+        products_price = item.get("products_table_price")
+        ws.cell(row=row, column=5, value=quantity).border = thin_border
+        ws.cell(row=row, column=6, value=round(products_price, 2) if products_price is not None else "N/A").border = thin_border
 
         price = item.get("unit_price")
         status = item.get("price_status", "resolved")
-        quantity = item.get("quantity", 1)
+        price_source = item.get("price_source", "unknown")
 
         if status == "pending_quote" or price is None:
-            ws.cell(row=row, column=4, value="PENDING").border = thin_border
-            ws.cell(row=row, column=5, value="PENDING").border = thin_border
-            ws.cell(row=row, column=6, value="PENDING").border = thin_border
+            # Column 7-10: Pending values
             ws.cell(row=row, column=7, value="PENDING").border = thin_border
-            ws.cell(row=row, column=8, value="Awaiting Quote").border = thin_border
+            ws.cell(row=row, column=8, value="PENDING").border = thin_border
+            ws.cell(row=row, column=9, value="PENDING").border = thin_border
+            ws.cell(row=row, column=10, value="PENDING").border = thin_border
+            # Column 11-12: Source and Status
+            ws.cell(row=row, column=11, value=price_source.capitalize()).border = thin_border
+            ws.cell(row=row, column=12, value="Awaiting Quote").border = thin_border
             pending_items.append(item)
         else:
-            # Cost columns
-            ws.cell(row=row, column=4, value=round(price, 2)).border = thin_border
+            # Column 7-8: Cost columns
+            ws.cell(row=row, column=7, value=round(price, 2)).border = thin_border
             item_total_cost = price * quantity
-            ws.cell(row=row, column=5, value=round(item_total_cost, 2)).border = thin_border
+            ws.cell(row=row, column=8, value=round(item_total_cost, 2)).border = thin_border
 
-            # Selling price columns (with profit margin applied)
+            # Column 9-10: Selling price columns (with profit margin applied)
             unit_selling = price * profit_margin
             item_total_selling = item_total_cost * profit_margin
-            ws.cell(row=row, column=6, value=round(unit_selling, 2)).border = thin_border
-            ws.cell(row=row, column=7, value=round(item_total_selling, 2)).border = thin_border
+            ws.cell(row=row, column=9, value=round(unit_selling, 2)).border = thin_border
+            ws.cell(row=row, column=10, value=round(item_total_selling, 2)).border = thin_border
 
-            ws.cell(row=row, column=8, value="Resolved").border = thin_border
+            # Column 11-12: Source and Status
+            ws.cell(row=row, column=11, value=price_source.capitalize()).border = thin_border
+            ws.cell(row=row, column=12, value="Resolved").border = thin_border
 
             total_cost += item_total_cost
             total_selling += item_total_selling
@@ -529,30 +553,34 @@ def create_costing_sheet_with_items(
     row += 1
     total_font = Font(bold=True)
 
-    ws.cell(row=row, column=4, value="TOTAL:").font = total_font
+    ws.cell(row=row, column=7, value="TOTAL:").font = total_font
     if pending_items:
-        ws.cell(row=row, column=5, value=f"{round(total_cost, 2)} + PENDING").font = total_font
-        ws.cell(row=row, column=7, value=f"{round(total_selling, 2)} + PENDING").font = total_font
+        ws.cell(row=row, column=8, value=f"{round(total_cost, 2)} + PENDING").font = total_font
+        ws.cell(row=row, column=10, value=f"{round(total_selling, 2)} + PENDING").font = total_font
     else:
-        ws.cell(row=row, column=5, value=round(total_cost, 2)).font = total_font
-        ws.cell(row=row, column=7, value=round(total_selling, 2)).font = total_font
+        ws.cell(row=row, column=8, value=round(total_cost, 2)).font = total_font
+        ws.cell(row=row, column=10, value=round(total_selling, 2)).font = total_font
 
     # Add profit summary row
     row += 1
-    ws.cell(row=row, column=4, value="PROFIT:").font = total_font
+    ws.cell(row=row, column=7, value="PROFIT:").font = total_font
     if not pending_items:
         profit_amount = total_selling - total_cost
-        ws.cell(row=row, column=7, value=round(profit_amount, 2)).font = total_font
+        ws.cell(row=row, column=10, value=round(profit_amount, 2)).font = total_font
 
     # Adjust column widths
-    ws.column_dimensions['A'].width = 30
-    ws.column_dimensions['B'].width = 15
-    ws.column_dimensions['C'].width = 8
-    ws.column_dimensions['D'].width = 12
-    ws.column_dimensions['E'].width = 12
-    ws.column_dimensions['F'].width = 12
-    ws.column_dimensions['G'].width = 12
-    ws.column_dimensions['H'].width = 15
+    ws.column_dimensions['A'].width = 30  # Item Name
+    ws.column_dimensions['B'].width = 15  # Item Code
+    ws.column_dimensions['C'].width = 10  # Est. Qty
+    ws.column_dimensions['D'].width = 12  # Est. Price
+    ws.column_dimensions['E'].width = 8   # Qty
+    ws.column_dimensions['F'].width = 14  # Products Price
+    ws.column_dimensions['G'].width = 12  # Unit Cost
+    ws.column_dimensions['H'].width = 12  # Total Cost
+    ws.column_dimensions['I'].width = 12  # Unit Sell
+    ws.column_dimensions['J'].width = 12  # Total Sell
+    ws.column_dimensions['K'].width = 14  # Price Source
+    ws.column_dimensions['L'].width = 15  # Status
 
     # Save file
     filename = f"costing_{job_id}.xlsx"
@@ -593,7 +621,16 @@ def regenerate_costing_sheet(job_id: str) -> Optional[str]:
                 "unit_price": li.unit_price,
                 "price_status": li.price_status or "pending",
                 "vendor_email": li.vendor_email,
-                "item_type": getattr(li, "item_type", None)
+                "item_type": getattr(li, "item_type", None),
+                # Estimation tracking fields
+                "estimation_quantity": getattr(li, "estimation_quantity", None),
+                "estimation_average_price": getattr(li, "estimation_average_price", None),
+                "estimation_last_purchase_price": getattr(li, "estimation_last_purchase_price", None),
+                "estimation_sales_price": getattr(li, "estimation_sales_price", None),
+                # Products table tracking
+                "products_table_price": getattr(li, "products_table_price", None),
+                # Price source
+                "price_source": getattr(li, "price_source", "unknown")
             })
 
         return create_costing_sheet_with_items(
@@ -706,6 +743,9 @@ def update_costing_sheet_with_price(
                 line_item.unit_price = price
                 line_item.price_status = "resolved"
                 line_item.quote_received_at = datetime.now()
+                # Mark as quotation source when received via email
+                if hasattr(line_item, 'price_source'):
+                    line_item.price_source = "quotation"
                 session.commit()
                 print(f"[CostingSheet] Updated price for {item_name}: {price}")
                 return True
@@ -742,7 +782,16 @@ def save_costing_line_items(job_id: str, items: List[Dict[str, Any]]) -> bool:
                 unit_price=item.get("unit_price"),
                 price_status=item.get("price_status", "pending"),
                 vendor_email=item.get("vendor_email"),
-                item_type=item.get("item_type")
+                item_type=item.get("item_type"),
+                # Estimation tracking fields
+                estimation_quantity=item.get("estimation_quantity"),
+                estimation_average_price=item.get("estimation_average_price"),
+                estimation_last_purchase_price=item.get("estimation_last_purchase_price"),
+                estimation_sales_price=item.get("estimation_sales_price"),
+                # Products table tracking fields
+                products_table_price=item.get("products_table_price"),
+                # Price source tracking
+                price_source=item.get("price_source", "pending")
             )
             session.add(line_item)
 
@@ -904,6 +953,9 @@ def mark_quote_received_by_id(
         line_item.unit_price = price
         line_item.price_status = "resolved"
         line_item.quote_received_at = datetime.now()
+        # Mark as quotation source when received via email
+        if hasattr(line_item, 'price_source'):
+            line_item.price_source = "quotation"
 
         # Update any associated pending request
         pending_req = session.query(PendingQuoteRequest).filter(
@@ -1028,5 +1080,751 @@ def get_quotation_by_id(quotation_id: str, line_num: int = None) -> Optional[Dic
     except Exception as e:
         print(f"DB Error: {e}")
         return None
+    finally:
+        session.close()
+
+
+# =============================================================================
+# NEW TOOLS FOR PHASE 1 & 2 AGENTS
+# =============================================================================
+
+# --- Edit Job Tools ---
+
+@trace_tool
+def add_line_item_to_job(
+    job_id: str,
+    item_name: str,
+    item_code: str = "",
+    quantity: int = 1,
+    unit_price: float = None,
+    vendor_email: str = None
+) -> Dict[str, Any]:
+    """
+    Adds a new line item to an existing costing job.
+    Returns the created line item details.
+    """
+    session = SessionLocal()
+    try:
+        costing_req = session.query(CostingRequest).filter(
+            CostingRequest.job_id == job_id
+        ).first()
+
+        if not costing_req:
+            return {"success": False, "error": f"Job {job_id} not found"}
+
+        # Determine price status and source
+        price_status = "resolved" if unit_price is not None else "pending_quote"
+        price_source = "manual" if unit_price is not None else "pending"
+
+        line_item = CostingLineItem(
+            costing_request_id=costing_req.id,
+            item_name=item_name,
+            item_code=item_code,
+            quantity=quantity,
+            unit_price=unit_price,
+            price_status=price_status,
+            vendor_email=vendor_email or config.VENDOR_DEFAULT_EMAIL,
+            price_source=price_source
+        )
+        session.add(line_item)
+        session.commit()
+
+        print(f"[AddLineItem] Added {item_name} to {job_id}")
+
+        # Regenerate costing sheet
+        regenerate_costing_sheet(job_id)
+
+        return {
+            "success": True,
+            "item_id": line_item.id,
+            "item_name": item_name,
+            "quantity": quantity,
+            "unit_price": unit_price,
+            "price_status": price_status
+        }
+    except Exception as e:
+        print(f"[AddLineItem] Error: {e}")
+        session.rollback()
+        return {"success": False, "error": str(e)}
+    finally:
+        session.close()
+
+
+@trace_tool
+def remove_line_item_from_job(job_id: str, item_identifier: str) -> Dict[str, Any]:
+    """
+    Removes a line item from a costing job.
+    item_identifier can be item_id (int as string) or item_name.
+    """
+    session = SessionLocal()
+    try:
+        costing_req = session.query(CostingRequest).filter(
+            CostingRequest.job_id == job_id
+        ).first()
+
+        if not costing_req:
+            return {"success": False, "error": f"Job {job_id} not found"}
+
+        # Try to find by ID first
+        line_item = None
+        if item_identifier.isdigit():
+            line_item = session.query(CostingLineItem).filter(
+                CostingLineItem.id == int(item_identifier),
+                CostingLineItem.costing_request_id == costing_req.id
+            ).first()
+
+        # If not found, try by name
+        if not line_item:
+            line_item = session.query(CostingLineItem).filter(
+                CostingLineItem.costing_request_id == costing_req.id,
+                CostingLineItem.item_name.ilike(f"%{item_identifier}%")
+            ).first()
+
+        if not line_item:
+            return {"success": False, "error": f"Item '{item_identifier}' not found in job {job_id}"}
+
+        item_name = line_item.item_name
+        session.delete(line_item)
+        session.commit()
+
+        print(f"[RemoveLineItem] Removed {item_name} from {job_id}")
+
+        # Regenerate costing sheet
+        regenerate_costing_sheet(job_id)
+
+        return {"success": True, "removed_item": item_name}
+    except Exception as e:
+        print(f"[RemoveLineItem] Error: {e}")
+        session.rollback()
+        return {"success": False, "error": str(e)}
+    finally:
+        session.close()
+
+
+@trace_tool
+def update_line_item(
+    job_id: str,
+    item_identifier: str,
+    new_quantity: int = None,
+    new_unit_price: float = None,
+    new_item_name: str = None,
+    new_item_code: str = None
+) -> Dict[str, Any]:
+    """
+    Updates a line item's details.
+    item_identifier can be item_id or item_name.
+    """
+    session = SessionLocal()
+    try:
+        costing_req = session.query(CostingRequest).filter(
+            CostingRequest.job_id == job_id
+        ).first()
+
+        if not costing_req:
+            return {"success": False, "error": f"Job {job_id} not found"}
+
+        # Find line item
+        line_item = None
+        if item_identifier.isdigit():
+            line_item = session.query(CostingLineItem).filter(
+                CostingLineItem.id == int(item_identifier),
+                CostingLineItem.costing_request_id == costing_req.id
+            ).first()
+
+        if not line_item:
+            line_item = session.query(CostingLineItem).filter(
+                CostingLineItem.costing_request_id == costing_req.id,
+                CostingLineItem.item_name.ilike(f"%{item_identifier}%")
+            ).first()
+
+        if not line_item:
+            return {"success": False, "error": f"Item '{item_identifier}' not found"}
+
+        # Update fields
+        if new_quantity is not None:
+            line_item.quantity = new_quantity
+        if new_unit_price is not None:
+            line_item.unit_price = new_unit_price
+            line_item.price_status = "resolved"
+            line_item.quote_received_at = datetime.now()
+            # Set price source to manual/quotation when manually entered
+            if hasattr(line_item, 'price_source'):
+                line_item.price_source = "quotation" if line_item.price_status == "pending_quote" else "manual"
+        if new_item_name is not None:
+            line_item.item_name = new_item_name
+        if new_item_code is not None:
+            line_item.item_code = new_item_code
+
+        session.commit()
+
+        print(f"[UpdateLineItem] Updated {line_item.item_name} in {job_id}")
+
+        # Regenerate costing sheet
+        regenerate_costing_sheet(job_id)
+
+        return {
+            "success": True,
+            "item_name": line_item.item_name,
+            "quantity": line_item.quantity,
+            "unit_price": line_item.unit_price,
+            "price_status": line_item.price_status
+        }
+    except Exception as e:
+        print(f"[UpdateLineItem] Error: {e}")
+        session.rollback()
+        return {"success": False, "error": str(e)}
+    finally:
+        session.close()
+
+
+@trace_tool
+def update_job_description(job_id: str, new_description: str) -> Dict[str, Any]:
+    """Updates the description of a costing job."""
+    session = SessionLocal()
+    try:
+        costing_req = session.query(CostingRequest).filter(
+            CostingRequest.job_id == job_id
+        ).first()
+
+        if not costing_req:
+            return {"success": False, "error": f"Job {job_id} not found"}
+
+        costing_req.item_details = new_description
+        session.commit()
+
+        print(f"[UpdateJobDesc] Updated description for {job_id}")
+
+        # Regenerate costing sheet
+        regenerate_costing_sheet(job_id)
+
+        return {"success": True, "job_id": job_id, "new_description": new_description}
+    except Exception as e:
+        print(f"[UpdateJobDesc] Error: {e}")
+        session.rollback()
+        return {"success": False, "error": str(e)}
+    finally:
+        session.close()
+
+
+# --- Job Lifecycle Tools ---
+
+@trace_tool
+def approve_costing_job(job_id: str, user_id: int) -> Dict[str, Any]:
+    """
+    Approves a costing job by changing its status to 'Approved'.
+    """
+    session = SessionLocal()
+    try:
+        costing_req = session.query(CostingRequest).filter(
+            CostingRequest.job_id == job_id,
+            CostingRequest.user_id == user_id
+        ).first()
+
+        if not costing_req:
+            return {"success": False, "error": f"Job {job_id} not found"}
+
+        costing_req.status = "Approved"
+        session.commit()
+
+        # Update SharePoint
+        update_sharepoint_status(job_id, status="Approved")
+
+        print(f"[ApproveJob] Approved {job_id}")
+
+        return {
+            "success": True,
+            "job_id": job_id,
+            "status": "Approved",
+            "message": f"Job {job_id} has been approved"
+        }
+    except Exception as e:
+        print(f"[ApproveJob] Error: {e}")
+        session.rollback()
+        return {"success": False, "error": str(e)}
+    finally:
+        session.close()
+
+
+@trace_tool
+def duplicate_costing_job(job_id: str, user_id: int, new_description: str = None) -> Dict[str, Any]:
+    """
+    Duplicates an existing costing job with all its line items.
+    Returns the new job_id.
+    """
+    session = SessionLocal()
+    try:
+        # Get original job
+        original_job = session.query(CostingRequest).filter(
+            CostingRequest.job_id == job_id,
+            CostingRequest.user_id == user_id
+        ).first()
+
+        if not original_job:
+            return {"success": False, "error": f"Job {job_id} not found"}
+
+        # Create new job
+        new_job_id = f"COST-{uuid.uuid4().hex[:8].upper()}"
+        new_job = CostingRequest(
+            user_id=user_id,
+            job_id=new_job_id,
+            quotation_id=original_job.quotation_id,
+            line_num=original_job.line_num,
+            item_details=new_description or f"Copy of {original_job.item_details}",
+            status="Completed"
+        )
+        session.add(new_job)
+        session.flush()
+
+        # Copy line items
+        original_items = session.query(CostingLineItem).filter(
+            CostingLineItem.costing_request_id == original_job.id
+        ).all()
+
+        for item in original_items:
+            new_item = CostingLineItem(
+                costing_request_id=new_job.id,
+                item_name=item.item_name,
+                item_code=item.item_code,
+                quantity=item.quantity,
+                unit_price=item.unit_price,
+                price_status=item.price_status,
+                vendor_email=item.vendor_email,
+                item_type=item.item_type
+            )
+            session.add(new_item)
+
+        session.commit()
+
+        print(f"[DuplicateJob] Created {new_job_id} from {job_id}")
+
+        # Generate costing sheet for new job
+        items_for_sheet = []
+        for item in original_items:
+            items_for_sheet.append({
+                "item_name": item.item_name,
+                "item_code": item.item_code,
+                "quantity": item.quantity,
+                "unit_price": item.unit_price,
+                "price_status": item.price_status,
+                "is_labour": item.item_type == "Hour" if item.item_type else False
+            })
+
+        create_costing_sheet_with_items(
+            new_job_id,
+            items_for_sheet,
+            original_job.quotation_id or "",
+            new_job.item_details
+        )
+
+        return {
+            "success": True,
+            "new_job_id": new_job_id,
+            "original_job_id": job_id,
+            "items_copied": len(original_items)
+        }
+    except Exception as e:
+        print(f"[DuplicateJob] Error: {e}")
+        session.rollback()
+        return {"success": False, "error": str(e)}
+    finally:
+        session.close()
+
+
+@trace_tool
+def cancel_costing_job(job_id: str, user_id: int) -> Dict[str, Any]:
+    """
+    Cancels a costing job by changing its status to 'Cancelled'.
+    """
+    session = SessionLocal()
+    try:
+        costing_req = session.query(CostingRequest).filter(
+            CostingRequest.job_id == job_id,
+            CostingRequest.user_id == user_id
+        ).first()
+
+        if not costing_req:
+            return {"success": False, "error": f"Job {job_id} not found"}
+
+        costing_req.status = "Cancelled"
+        session.commit()
+
+        # Update SharePoint
+        update_sharepoint_status(job_id, status="Cancelled")
+
+        print(f"[CancelJob] Cancelled {job_id}")
+
+        return {
+            "success": True,
+            "job_id": job_id,
+            "status": "Cancelled"
+        }
+    except Exception as e:
+        print(f"[CancelJob] Error: {e}")
+        session.rollback()
+        return {"success": False, "error": str(e)}
+    finally:
+        session.close()
+
+
+@trace_tool
+def get_download_url(job_id: str) -> Dict[str, Any]:
+    """
+    Returns the download URL for a costing sheet.
+    """
+    filename = f"costing_{job_id}.xlsx"
+    file_path = os.path.join(config.TEMP_DOWNLOADS_DIR, filename)
+
+    if os.path.exists(file_path):
+        return {
+            "success": True,
+            "job_id": job_id,
+            "download_url": f"/costing-sheets/{filename}",
+            "filename": filename
+        }
+    else:
+        return {
+            "success": False,
+            "error": f"Costing sheet for {job_id} not found. It may need to be regenerated."
+        }
+
+
+# --- Quote Management Tools ---
+
+@trace_tool
+def enter_manual_quote(
+    job_id: str,
+    item_identifier: str,
+    quoted_price: float,
+    vendor_email: str = None
+) -> Dict[str, Any]:
+    """
+    Manually enters a quote price for an item.
+    Sets price_source to 'manual' or 'quotation' depending on context.
+    """
+    result = update_line_item(
+        job_id=job_id,
+        item_identifier=item_identifier,
+        new_unit_price=quoted_price
+    )
+
+    # Mark as quotation source if manually entered
+    if result.get("success"):
+        result["message"] = "Manual quote entered successfully"
+
+    return result
+
+
+@trace_tool
+def resend_quote_request(job_id: str, item_name: str) -> Dict[str, Any]:
+    """
+    Resends a quote request email for a specific item.
+    """
+    session = SessionLocal()
+    try:
+        costing_req = session.query(CostingRequest).filter(
+            CostingRequest.job_id == job_id
+        ).first()
+
+        if not costing_req:
+            return {"success": False, "error": f"Job {job_id} not found"}
+
+        # Find the line item
+        line_item = session.query(CostingLineItem).filter(
+            CostingLineItem.costing_request_id == costing_req.id,
+            CostingLineItem.item_name.ilike(f"%{item_name}%")
+        ).first()
+
+        if not line_item:
+            return {"success": False, "error": f"Item '{item_name}' not found in job"}
+
+        # Send email
+        email_sent = send_price_request_email(
+            job_id=job_id,
+            item_name=line_item.item_name,
+            item_code=line_item.item_code or "N/A",
+            quantity=line_item.quantity or 1,
+            vendor_email=line_item.vendor_email or config.VENDOR_DEFAULT_EMAIL
+        )
+
+        if email_sent:
+            return {
+                "success": True,
+                "job_id": job_id,
+                "item_name": line_item.item_name,
+                "vendor_email": line_item.vendor_email,
+                "message": f"Quote request resent to {line_item.vendor_email}"
+            }
+        else:
+            return {"success": False, "error": "Failed to send email"}
+
+    except Exception as e:
+        print(f"[ResendQuote] Error: {e}")
+        return {"success": False, "error": str(e)}
+    finally:
+        session.close()
+
+
+@trace_tool
+def cancel_quote_request(job_id: str, item_name: str) -> Dict[str, Any]:
+    """
+    Cancels a pending quote request for an item.
+    """
+    session = SessionLocal()
+    try:
+        # Find pending request
+        costing_req = session.query(CostingRequest).filter(
+            CostingRequest.job_id == job_id
+        ).first()
+
+        if not costing_req:
+            return {"success": False, "error": f"Job {job_id} not found"}
+
+        pending_req = session.query(PendingQuoteRequest).filter(
+            PendingQuoteRequest.job_id == job_id,
+            PendingQuoteRequest.item_name.ilike(f"%{item_name}%"),
+            PendingQuoteRequest.status == "pending"
+        ).first()
+
+        if not pending_req:
+            return {"success": False, "error": f"No pending quote request found for '{item_name}'"}
+
+        pending_req.status = "cancelled"
+        session.commit()
+
+        print(f"[CancelQuote] Cancelled quote request for {item_name} in {job_id}")
+
+        return {
+            "success": True,
+            "job_id": job_id,
+            "item_name": item_name,
+            "message": f"Quote request cancelled for {item_name}"
+        }
+    except Exception as e:
+        print(f"[CancelQuote] Error: {e}")
+        session.rollback()
+        return {"success": False, "error": str(e)}
+    finally:
+        session.close()
+
+
+# --- Pricing Intelligence Tools ---
+
+@trace_tool
+def get_item_price_history(item_code: str, limit: int = 10) -> List[Dict[str, Any]]:
+    """
+    Retrieves price history for an item from past costing jobs.
+    """
+    session = SessionLocal()
+    try:
+        line_items = session.query(CostingLineItem).filter(
+            CostingLineItem.item_code == item_code,
+            CostingLineItem.unit_price.isnot(None)
+        ).order_by(CostingLineItem.quote_received_at.desc()).limit(limit).all()
+
+        history = []
+        for item in line_items:
+            costing_req = session.query(CostingRequest).filter(
+                CostingRequest.id == item.costing_request_id
+            ).first()
+
+            history.append({
+                "job_id": costing_req.job_id if costing_req else "Unknown",
+                "item_name": item.item_name,
+                "unit_price": item.unit_price,
+                "quantity": item.quantity,
+                "vendor_email": item.vendor_email,
+                "date": item.quote_received_at.isoformat() if item.quote_received_at else None
+            })
+
+        return history
+    except Exception as e:
+        print(f"[PriceHistory] Error: {e}")
+        return []
+    finally:
+        session.close()
+
+
+@trace_tool
+def get_average_item_price(item_code: str) -> Dict[str, Any]:
+    """
+    Calculates average price for an item from historical data.
+    """
+    session = SessionLocal()
+    try:
+        from sqlalchemy import func
+
+        result = session.query(
+            func.avg(CostingLineItem.unit_price).label('avg_price'),
+            func.min(CostingLineItem.unit_price).label('min_price'),
+            func.max(CostingLineItem.unit_price).label('max_price'),
+            func.count(CostingLineItem.id).label('count')
+        ).filter(
+            CostingLineItem.item_code == item_code,
+            CostingLineItem.unit_price.isnot(None)
+        ).first()
+
+        if result and result.count > 0:
+            return {
+                "item_code": item_code,
+                "average_price": round(result.avg_price, 2) if result.avg_price else None,
+                "min_price": round(result.min_price, 2) if result.min_price else None,
+                "max_price": round(result.max_price, 2) if result.max_price else None,
+                "sample_count": result.count
+            }
+        else:
+            return {
+                "item_code": item_code,
+                "error": "No historical pricing data found"
+            }
+    except Exception as e:
+        print(f"[AvgPrice] Error: {e}")
+        return {"item_code": item_code, "error": str(e)}
+    finally:
+        session.close()
+
+
+# --- Vendor Intelligence Tools ---
+
+@trace_tool
+def get_vendor_info(vendor_email: str) -> Dict[str, Any]:
+    """
+    Retrieves vendor information and statistics.
+    """
+    session = SessionLocal()
+    try:
+        from sqlalchemy import func
+
+        # Get quote response statistics
+        total_requests = session.query(PendingQuoteRequest).filter(
+            PendingQuoteRequest.vendor_email == vendor_email
+        ).count()
+
+        received_requests = session.query(PendingQuoteRequest).filter(
+            PendingQuoteRequest.vendor_email == vendor_email,
+            PendingQuoteRequest.status == "received"
+        ).count()
+
+        pending_requests = session.query(PendingQuoteRequest).filter(
+            PendingQuoteRequest.vendor_email == vendor_email,
+            PendingQuoteRequest.status == "pending"
+        ).count()
+
+        # Get items supplied by this vendor
+        items_count = session.query(CostingLineItem).filter(
+            CostingLineItem.vendor_email == vendor_email
+        ).count()
+
+        return {
+            "vendor_email": vendor_email,
+            "total_quote_requests": total_requests,
+            "received_quotes": received_requests,
+            "pending_quotes": pending_requests,
+            "response_rate": round((received_requests / total_requests * 100), 1) if total_requests > 0 else 0,
+            "total_items_supplied": items_count
+        }
+    except Exception as e:
+        print(f"[VendorInfo] Error: {e}")
+        return {"vendor_email": vendor_email, "error": str(e)}
+    finally:
+        session.close()
+
+
+@trace_tool
+def get_vendors_for_item_type(item_type: str = None, item_code: str = None) -> List[Dict[str, Any]]:
+    """
+    Finds vendors who have supplied specific types of items.
+    """
+    session = SessionLocal()
+    try:
+        from sqlalchemy import func, distinct
+
+        query = session.query(
+            CostingLineItem.vendor_email,
+            func.count(CostingLineItem.id).label('item_count')
+        ).filter(
+            CostingLineItem.vendor_email.isnot(None)
+        )
+
+        if item_type:
+            query = query.filter(CostingLineItem.item_type == item_type)
+
+        if item_code:
+            query = query.filter(CostingLineItem.item_code.like(f"%{item_code}%"))
+
+        vendors = query.group_by(CostingLineItem.vendor_email).order_by(func.count(CostingLineItem.id).desc()).limit(10).all()
+
+        return [{
+            "vendor_email": v.vendor_email,
+            "items_supplied": v.item_count
+        } for v in vendors]
+    except Exception as e:
+        print(f"[VendorsForItem] Error: {e}")
+        return []
+    finally:
+        session.close()
+
+
+@trace_tool
+def send_costing_sheet_email(
+    job_id: str,
+    recipient_email: str,
+    message: str = ""
+) -> Dict[str, Any]:
+    """
+    Sends the costing sheet to a specified email address.
+    """
+    session = SessionLocal()
+    try:
+        costing_req = session.query(CostingRequest).filter(
+            CostingRequest.job_id == job_id
+        ).first()
+
+        if not costing_req:
+            return {"success": False, "error": f"Job {job_id} not found"}
+
+        # Get file path
+        filename = f"costing_{job_id}.xlsx"
+        file_path = os.path.join(config.TEMP_DOWNLOADS_DIR, filename)
+
+        if not os.path.exists(file_path):
+            # Try to regenerate
+            file_path = regenerate_costing_sheet(job_id)
+            if not file_path or not os.path.exists(file_path):
+                return {"success": False, "error": "Costing sheet file not found"}
+
+        # Send email with attachment
+        subject = f"Costing Sheet - {job_id}"
+        body = f"""Please find attached the costing sheet for job {job_id}.
+
+Description: {costing_req.item_details or 'N/A'}
+Status: {costing_req.status}
+
+{message}
+
+Best regards,
+Gulf Craft Costing Team
+"""
+
+        email_sent = send_email(
+            to=recipient_email,
+            subject=subject,
+            body=body,
+            service="microsoft",
+            attachment_path=file_path
+        )
+
+        if email_sent:
+            return {
+                "success": True,
+                "job_id": job_id,
+                "recipient": recipient_email,
+                "message": f"Costing sheet sent to {recipient_email}"
+            }
+        else:
+            return {"success": False, "error": "Failed to send email"}
+
+    except Exception as e:
+        print(f"[SendCostingEmail] Error: {e}")
+        return {"success": False, "error": str(e)}
     finally:
         session.close()

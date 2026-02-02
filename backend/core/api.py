@@ -24,6 +24,16 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# --- Health Check (Public Endpoint) ---
+@app.get("/")
+def root():
+    return {"status": "ok", "service": "Gulf Craft Costing Agent", "version": "1.0.0"}
+
+@app.get("/health")
+def health():
+    return {"status": "healthy", "database": "connected"}
+
 # --- Auth Setup ---
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
 
@@ -99,6 +109,15 @@ class LineItemSchema(BaseModel):
     price_status: str
     vendor_email: Optional[str] = None
     item_type: Optional[str] = None
+    # Estimation tracking fields
+    estimation_quantity: Optional[int] = None
+    estimation_average_price: Optional[float] = None
+    estimation_last_purchase_price: Optional[float] = None
+    estimation_sales_price: Optional[float] = None
+    # Products table tracking
+    products_table_price: Optional[float] = None
+    # Price source
+    price_source: Optional[str] = None
 
     model_config = ConfigDict(from_attributes=True)
 

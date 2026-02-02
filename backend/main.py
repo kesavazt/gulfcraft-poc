@@ -5,6 +5,12 @@ from agents import (
     supervisor_node, search_node, refinement_node,
     selection_node, costing_node, status_node
 )
+from agents.edit_job import edit_job_node
+from agents.quote_management import quote_management_node
+from agents.job_lifecycle import job_lifecycle_node
+from agents.pricing_advisor import pricing_advisor_node
+from agents.explainer import explainer_node
+from agents.vendor_info import vendor_info_node
 from utils.tools import search_similar_quotations
 from core.database import init_db
 
@@ -20,6 +26,12 @@ workflow.add_node("RefinementAgent", refinement_node)
 workflow.add_node("SelectionAgent", selection_node)
 workflow.add_node("CostingAgent", costing_node)
 workflow.add_node("StatusAgent", status_node)
+workflow.add_node("EditJobAgent", edit_job_node)
+workflow.add_node("QuoteManagementAgent", quote_management_node)
+workflow.add_node("JobLifecycleAgent", job_lifecycle_node)
+workflow.add_node("PricingAdvisorAgent", pricing_advisor_node)
+workflow.add_node("ExplainerAgent", explainer_node)
+workflow.add_node("VendorInfoAgent", vendor_info_node)
 
 # Set entry point
 workflow.set_entry_point("Supervisor")
@@ -39,10 +51,22 @@ workflow.add_conditional_edges(
         "SearchAgent": "SearchAgent",
         "SelectionAgent": "SelectionAgent",
         "StatusAgent": "StatusAgent",
+        "EditJobAgent": "EditJobAgent",
+        "QuoteManagementAgent": "QuoteManagementAgent",
+        "JobLifecycleAgent": "JobLifecycleAgent",
+        "PricingAdvisorAgent": "PricingAdvisorAgent",
+        "ExplainerAgent": "ExplainerAgent",
+        "VendorInfoAgent": "VendorInfoAgent",
         "FINISH": END
     }
 )
 workflow.add_edge("StatusAgent", END)
+workflow.add_edge("EditJobAgent", END)
+workflow.add_edge("QuoteManagementAgent", END)
+workflow.add_edge("JobLifecycleAgent", END)
+workflow.add_edge("PricingAdvisorAgent", END)
+workflow.add_edge("ExplainerAgent", END)
+workflow.add_edge("VendorInfoAgent", END)
 
 # Search flow: SearchAgent -> Tools (if tool call) or RefinementAgent (if direct search)
 def search_router(state):
@@ -145,6 +169,13 @@ def invoke_agent(message: str, user_id: int = 1, threshold: float = 1000.0, conv
             inputs["similar_quotations"] = session_state["similar_quotations"]
         if session_state.get("awaiting_selection") is not None:
             inputs["awaiting_selection"] = session_state["awaiting_selection"]
+        # Context tracking fields
+        if session_state.get("last_mentioned_job_id"):
+            inputs["last_mentioned_job_id"] = session_state["last_mentioned_job_id"]
+        if session_state.get("last_action"):
+            inputs["last_action"] = session_state["last_action"]
+        if session_state.get("last_vendor_email"):
+            inputs["last_vendor_email"] = session_state["last_vendor_email"]
 
 
     response_messages = []
@@ -173,7 +204,11 @@ def invoke_agent(message: str, user_id: int = 1, threshold: float = 1000.0, conv
             "last_search_boat_model": final_state.get("last_search_boat_model"),
             "current_top_k": final_state.get("current_top_k"),
             "similar_quotations": final_state.get("similar_quotations"),
-            "selected_quotation": final_state.get("selected_quotation")
+            "selected_quotation": final_state.get("selected_quotation"),
+            # Context tracking
+            "last_mentioned_job_id": final_state.get("last_mentioned_job_id"),
+            "last_action": final_state.get("last_action"),
+            "last_vendor_email": final_state.get("last_vendor_email")
         }
 
     }
