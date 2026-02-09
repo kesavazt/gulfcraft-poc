@@ -11,7 +11,6 @@ on:
 
 env:
   AZURE_WEBAPP_NAME: gc-backend
-  RESOURCE_GROUP: gulfcraft
   WEBJOB_NAME: email-monitor
 
 jobs:
@@ -25,52 +24,41 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v4
 
-    - name: Azure Login
-      uses: azure/login@v2
-      with:
-        creds: ${{ secrets.AZURE_CREDENTIALS }}
+    - name: Extract SCM credentials from publish profile
+      id: creds
+      run: |
+        # Parse userName and userPWD from the publish profile XML
+        USERNAME=$(echo '${{ secrets.AZURE_WEBAPP_PUBLISH_PROFILE }}' | grep -oP 'userName="\K[^"]+' | head -1)
+        PASSWORD=$(echo '${{ secrets.AZURE_WEBAPP_PUBLISH_PROFILE }}' | grep -oP 'userPWD="\K[^"]+' | head -1)
+        echo "::add-mask::$PASSWORD"
+        echo "scm_username=$USERNAME" >> $GITHUB_OUTPUT
+        echo "scm_password=$PASSWORD" >> $GITHUB_OUTPUT
 
     - name: Prepare WebJob package
       run: |
         mkdir -p webjob_package
 
-        # Create run.py entry point
         cat > webjob_package/run.py << 'SCRIPT'
         #!/usr/bin/env python
         """WebJob entry point for email monitoring service."""
-        import sys
-        import os
-        import time
-
+        import sys, os, time
         sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
-
         print("[WebJob] Starting Email Monitor WebJob...")
-        print(f"[WebJob] Python version: {sys.version}")
-        print(f"[WebJob] Working directory: {os.getcwd()}")
-
         try:
             from backend.services.email_monitor import get_email_monitor
-
             monitor = get_email_monitor()
             monitor.start()
             print("[WebJob] Email monitor started successfully")
-
-            try:
-                while True:
-                    time.sleep(60)
-                    print(f"[WebJob] Still running... {time.strftime('%Y-%m-%d %H:%M:%S')}")
-            except KeyboardInterrupt:
-                print("[WebJob] Shutting down...")
-                monitor.stop()
-
+            while True:
+                time.sleep(60)
+        except KeyboardInterrupt:
+            monitor.stop()
         except Exception as e:
             print(f"[WebJob] Error: {e}")
-            import traceback
-            traceback.print_exc()
+            import traceback; traceback.print_exc()
             sys.exit(1)
         SCRIPT
 
-        # Create settings.job for continuous WebJob
         cat > webjob_package/settings.job << 'EOF'
         {
           "schedule": "",
@@ -78,7 +66,6 @@ jobs:
         }
         EOF
 
-        # Create shell runner
         cat > webjob_package/run.sh << 'EOF'
         #!/bin/bash
         cd /home/site/wwwroot
@@ -86,28 +73,16 @@ jobs:
         EOF
         chmod +x webjob_package/run.sh
 
-        # Zip the package
         cd webjob_package
         zip -r ../webjob.zip .
-        cd ..
 
-    - name: Deploy WebJob to App Service
+    - name: Deploy WebJob via Kudu API
       run: |
-        # Get publishing credentials
-        CREDS=$(az webapp deployment list-publishing-credentials \
-          --resource-group ${{ env.RESOURCE_GROUP }} \
-          --name ${{ env.AZURE_WEBAPP_NAME }} \
-          --query "{username:publishingUserName, password:publishingPassword}" -o json)
-
-        USERNAME=$(echo $CREDS | jq -r '.username')
-        PASSWORD=$(echo $CREDS | jq -r '.password')
-
         KUDU_URL="https://${{ env.AZURE_WEBAPP_NAME }}.scm.azurewebsites.net/api/continuouswebjobs/${{ env.WEBJOB_NAME }}"
 
-        # Upload WebJob via Kudu API
         echo "Deploying WebJob to: $KUDU_URL"
         HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X PUT \
-          -u "$USERNAME:$PASSWORD" \
+          -u "${{ steps.creds.outputs.scm_username }}:${{ steps.creds.outputs.scm_password }}" \
           -H "Content-Type: application/zip" \
           --data-binary @webjob.zip \
           "$KUDU_URL")
@@ -121,37 +96,15 @@ jobs:
 
     - name: Start WebJob
       run: |
-        CREDS=$(az webapp deployment list-publishing-credentials \
-          --resource-group ${{ env.RESOURCE_GROUP }} \
-          --name ${{ env.AZURE_WEBAPP_NAME }} \
-          --query "{username:publishingUserName, password:publishingPassword}" -o json)
-
-        USERNAME=$(echo $CREDS | jq -r '.username')
-        PASSWORD=$(echo $CREDS | jq -r '.password')
-
         curl -s -X POST \
-          -u "$USERNAME:$PASSWORD" \
+          -u "${{ steps.creds.outputs.scm_username }}:${{ steps.creds.outputs.scm_password }}" \
           "https://${{ env.AZURE_WEBAPP_NAME }}.scm.azurewebsites.net/api/continuouswebjobs/${{ env.WEBJOB_NAME }}/start"
-
         echo "WebJob started"
 
     - name: Verify WebJob status
       run: |
-        CREDS=$(az webapp deployment list-publishing-credentials \
-          --resource-group ${{ env.RESOURCE_GROUP }} \
-          --name ${{ env.AZURE_WEBAPP_NAME }} \
-          --query "{username:publishingUserName, password:publishingPassword}" -o json)
-
-        USERNAME=$(echo $CREDS | jq -r '.username')
-        PASSWORD=$(echo $CREDS | jq -r '.password')
-
         STATUS=$(curl -s \
-          -u "$USERNAME:$PASSWORD" \
+          -u "${{ steps.creds.outputs.scm_username }}:${{ steps.creds.outputs.scm_password }}" \
           "https://${{ env.AZURE_WEBAPP_NAME }}.scm.azurewebsites.net/api/continuouswebjobs/${{ env.WEBJOB_NAME }}")
-
         echo "WebJob status:"
         echo "$STATUS" | jq '.'
-
-    - name: Azure Logout
-      run: az logout
-      if: always()
