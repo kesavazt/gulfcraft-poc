@@ -14,6 +14,7 @@ from core import config
 from core.database import SessionLocal, User, Conversation, Message, CostingRequest, CostingLineItem, Product, EstimationLines, init_db
 from main import invoke_agent
 from utils import tools
+from utils.lifecycle_tracing import get_job_metrics, get_aggregate_metrics
 
 app = FastAPI()
 
@@ -83,11 +84,6 @@ class Token(BaseModel):
     access_token: str
     token_type: str
 
-class UserCreate(BaseModel):
-    username: str
-    password: str
-    role: str = "user"
-
 class ChatRequest(BaseModel):
     message: str
     conversation_id: Optional[int] = None
@@ -156,19 +152,6 @@ class RequestStatus(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 # ...
-
-@app.post("/auth/register", response_model=Token)
-def register(user: UserCreate, db: Session = Depends(get_db)):
-    db_user = db.query(User).filter(User.username == user.username).first()
-    if db_user:
-        raise HTTPException(status_code=400, detail="Username already registered")
-    hashed_password = hash_password(user.password)
-    new_user = User(username=user.username, hashed_password=hashed_password, role=user.role)
-    db.add(new_user)
-    db.commit()
-    db.refresh(new_user)
-    access_token = create_access_token(data={"sub": new_user.username})
-    return {"access_token": access_token, "token_type": "bearer"}
 
 @app.post("/token", response_model=Token)
 def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
@@ -295,7 +278,7 @@ def search_products(q: str, db: Session = Depends(get_db)):
                 "item_code": product.item_number,
                 "item_name": product.item_number,  # Use code as name since no name field
                 "unit_cost": float(product.unit_cost) if product.unit_cost else None,
-                "vendor_email": product.vendor_email,
+                "vendor_email": config.VENDOR_DEFAULT_EMAIL,
                 "source": "product"
             })
             seen_items.add(item_key)
@@ -317,13 +300,12 @@ def search_products(q: str, db: Session = Depends(get_db)):
                 ).first()
                 if product:
                     product_price = float(product.unit_cost) if product.unit_cost else None
-                    vendor_email = product.vendor_email
 
             results.append({
                 "item_code": item.std_item_code,
                 "item_name": item.item_name,
                 "unit_cost": product_price or (float(item.sales_price) if item.sales_price else None),
-                "vendor_email": vendor_email or config.VENDOR_DEFAULT_EMAIL,
+                "vendor_email": config.VENDOR_DEFAULT_EMAIL,
                 "source": "estimation"
             })
             seen_items.add(item_key)
@@ -338,20 +320,18 @@ def search_products(q: str, db: Session = Depends(get_db)):
             item_key = item.std_item_code or item.item_name
             if item_key not in seen_items:
                 product_price = None
-                vendor_email = None
                 if item.std_item_code:
                     product = db.query(Product).filter(
                         Product.item_number == item.std_item_code
                     ).first()
                     if product:
                         product_price = float(product.unit_cost) if product.unit_cost else None
-                        vendor_email = product.vendor_email
 
                 results.append({
                     "item_code": item.std_item_code,
                     "item_name": item.item_name,
                     "unit_cost": product_price or (float(item.sales_price) if item.sales_price else None),
-                    "vendor_email": vendor_email or config.VENDOR_DEFAULT_EMAIL,
+                    "vendor_email": config.VENDOR_DEFAULT_EMAIL,
                     "source": "estimation"
                 })
                 seen_items.add(item_key)
@@ -607,6 +587,187 @@ def download_file(filename: str, current_user: User = Depends(get_current_user))
             headers={"Cache-Control": "no-store, max-age=0", "Pragma": "no-cache"}
         )
     raise HTTPException(status_code=404, detail="File not found")
+
+
+# --- Job Duration Metrics Endpoints ---
+
+class JobMetricsResponse(BaseModel):
+    """Response schema for job metrics."""
+    job_id: str
+    status: str
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+    quotes_requested_at: Optional[str] = None
+    all_quotes_received_at: Optional[str] = None
+    approved_at: Optional[str] = None
+    cancelled_at: Optional[str] = None
+    original_job_id: Optional[str] = None
+    item_metrics: dict
+    quote_metrics: dict
+    durations: dict
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class AggregateMetricsResponse(BaseModel):
+    """Response schema for aggregate metrics."""
+    period_days: int
+    total_jobs: int
+    status_breakdown: Optional[dict] = None
+    avg_time_to_approval: Optional[dict] = None
+    avg_quote_wait_time: Optional[dict] = None
+    jobs_pending_quotes: Optional[int] = None
+    jobs_ready: Optional[int] = None
+    jobs_approved: Optional[int] = None
+    message: Optional[str] = None
+    error: Optional[str] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+@app.get("/metrics/job/{job_id}", response_model=JobMetricsResponse)
+def get_job_metrics_endpoint(job_id: str, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """
+    Get comprehensive duration metrics for a specific job.
+
+    Returns timestamps for key lifecycle events and calculated durations:
+    - Time from creation to first quote request
+    - Time waiting for all quotes
+    - Time from ready to approval
+    - Total time to completion
+    """
+    # Verify user has access to this job
+    request = db.query(CostingRequest).filter(CostingRequest.job_id == job_id).first()
+    if not request:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if current_user.role != "admin" and request.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Permission denied")
+
+    metrics = get_job_metrics(job_id)
+    if not metrics:
+        raise HTTPException(status_code=404, detail="Metrics not available for this job")
+
+    return metrics
+
+
+@app.get("/metrics/aggregate", response_model=AggregateMetricsResponse)
+def get_aggregate_metrics_endpoint(
+    days: int = 30,
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Get aggregate metrics across all jobs for the current user.
+
+    Args:
+        days: Number of days to look back (default: 30)
+
+    Returns:
+        - Total jobs in period
+        - Status breakdown
+        - Average time to approval
+        - Average quote wait time
+        - Jobs pending/ready/approved counts
+    """
+    # Regular users only see their own metrics, admins see all
+    user_id = None if current_user.role == "admin" else current_user.id
+
+    metrics = get_aggregate_metrics(user_id=user_id, days=days)
+    return metrics
+
+
+@app.get("/metrics/job/{job_id}/timeline")
+def get_job_timeline(job_id: str, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """
+    Get a timeline of events for a specific job.
+
+    Returns a chronological list of lifecycle events with timestamps.
+    """
+    from core.database import PendingQuoteRequest, CostingLineItem
+
+    # Verify user has access to this job
+    request = db.query(CostingRequest).filter(CostingRequest.job_id == job_id).first()
+    if not request:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if current_user.role != "admin" and request.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Permission denied")
+
+    timeline = []
+
+    # Job created
+    if request.created_at:
+        timeline.append({
+            "event": "job.created",
+            "timestamp": request.created_at.isoformat(),
+            "details": {"description": request.item_details}
+        })
+
+    # First quote requested
+    if request.quotes_requested_at:
+        timeline.append({
+            "event": "job.quotes_requested",
+            "timestamp": request.quotes_requested_at.isoformat(),
+            "details": {}
+        })
+
+    # Individual quote requests
+    quote_requests = db.query(PendingQuoteRequest).filter(
+        PendingQuoteRequest.costing_request_id == request.id
+    ).order_by(PendingQuoteRequest.email_sent_at).all()
+
+    for qr in quote_requests:
+        if qr.email_sent_at:
+            timeline.append({
+                "event": "quote.requested",
+                "timestamp": qr.email_sent_at.isoformat(),
+                "details": {
+                    "item_name": qr.item_name,
+                    "vendor_email": qr.vendor_email
+                }
+            })
+
+        if qr.received_at:
+            timeline.append({
+                "event": "quote.received",
+                "timestamp": qr.received_at.isoformat(),
+                "details": {
+                    "item_name": qr.item_name,
+                    "price": qr.received_price
+                }
+            })
+
+    # All quotes received (job ready)
+    if request.all_quotes_received_at:
+        timeline.append({
+            "event": "job.ready",
+            "timestamp": request.all_quotes_received_at.isoformat(),
+            "details": {}
+        })
+
+    # Job approved
+    if request.approved_at:
+        timeline.append({
+            "event": "job.approved",
+            "timestamp": request.approved_at.isoformat(),
+            "details": {}
+        })
+
+    # Job cancelled
+    if request.cancelled_at:
+        timeline.append({
+            "event": "job.cancelled",
+            "timestamp": request.cancelled_at.isoformat(),
+            "details": {}
+        })
+
+    # Sort by timestamp
+    timeline.sort(key=lambda x: x["timestamp"])
+
+    return {
+        "job_id": job_id,
+        "status": request.status,
+        "timeline": timeline
+    }
+
 
 if __name__ == "__main__":
     import uvicorn

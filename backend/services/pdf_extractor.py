@@ -1,6 +1,8 @@
 """
 PDF Table Extractor
-Extracts line items, prices, and quantities from tables in PDF documents using Mistral OCR API.
+Extracts line items, prices, and quantities from tables in PDF documents
+using Mistral Document AI (mistral-document-ai-2505) deployed on Azure for OCR,
+and Azure OpenAI for structured extraction.
 """
 import os
 import sys
@@ -17,18 +19,16 @@ if str(BASE_DIR) not in sys.path:
 
 from core import config
 
-# Mistral OCR API endpoint
-MISTRAL_OCR_URL = "https://api.mistral.ai/v1/ocr"
-MISTRAL_CHAT_URL = "https://api.mistral.ai/v1/chat/completions"
-# OCR model that supports PDF documents directly
-MISTRAL_OCR_MODEL = "mistral-ocr-latest"
-# Chat model for structured extraction
-MISTRAL_CHAT_MODEL = "mistral-small-latest"
+# Azure-deployed Mistral Document AI model
+MISTRAL_DOCUMENT_MODEL = "mistral-document-ai-2505"
+
+# Azure OpenAI config for structured extraction
+AZURE_OPENAI_API_VERSION = "2024-08-01-preview"
 
 
 def extract_text_from_pdf(pdf_path: str) -> str:
     """
-    Extract text content from a PDF using Mistral OCR API.
+    Extract text content from a PDF using Mistral Document AI OCR on Azure.
 
     Args:
         pdf_path: Path to the PDF file
@@ -36,24 +36,27 @@ def extract_text_from_pdf(pdf_path: str) -> str:
     Returns:
         Extracted text content as markdown
     """
-    # Read and encode PDF file
     with open(pdf_path, "rb") as f:
         pdf_content = base64.b64encode(f.read()).decode("utf-8")
 
+    endpoint = config.AZURE_MISTRAL_ENDPOINT.rstrip("/")
+    url = f"{endpoint}/providers/mistral/azure/ocr"
+
     headers = {
         "Content-Type": "application/json",
-        "Authorization": f"Bearer {config.MISTRAL_API_KEY}"
+        "Authorization": f"Bearer {config.AZURE_MISTRAL_API_KEY}"
     }
 
     payload = {
-        "model": MISTRAL_OCR_MODEL,
+        "model": MISTRAL_DOCUMENT_MODEL,
         "document": {
             "type": "document_url",
             "document_url": f"data:application/pdf;base64,{pdf_content}"
-        }
+        },
+        "include_image_base64": True
     }
 
-    response = requests.post(MISTRAL_OCR_URL, headers=headers, json=payload, timeout=120)
+    response = requests.post(url, headers=headers, json=payload, timeout=120)
 
     if response.status_code != 200:
         print(f"[PDF Extractor] OCR API Error: {response.status_code}")
@@ -74,7 +77,7 @@ def extract_text_from_pdf(pdf_path: str) -> str:
 
 def extract_line_items_from_text(text: str) -> List[Dict[str, Any]]:
     """
-    Extract line items from OCR text using Mistral chat model.
+    Extract line items from OCR text using Azure OpenAI chat model.
 
     Args:
         text: OCR extracted text
@@ -111,13 +114,16 @@ Important:
 - Include item codes/SKUs in the item_name if present
 - Return ONLY the JSON array, no additional text"""
 
+    endpoint = config.AZURE_OPENAI_ENDPOINT.rstrip("/")
+    deployment = config.AZURE_OPENAI_CHAT_DEPLOYMENT_NAME
+    url = f"{endpoint}/openai/deployments/{deployment}/chat/completions?api-version={AZURE_OPENAI_API_VERSION}"
+
     headers = {
         "Content-Type": "application/json",
-        "Authorization": f"Bearer {config.MISTRAL_API_KEY}"
+        "api-key": config.AZURE_OPENAI_API_KEY
     }
 
     payload = {
-        "model": MISTRAL_CHAT_MODEL,
         "messages": [
             {
                 "role": "user",
@@ -126,7 +132,7 @@ Important:
         ]
     }
 
-    response = requests.post(MISTRAL_CHAT_URL, headers=headers, json=payload, timeout=120)
+    response = requests.post(url, headers=headers, json=payload, timeout=120)
 
     if response.status_code != 200:
         print(f"[PDF Extractor] Chat API Error: {response.status_code}")
@@ -157,9 +163,8 @@ def extract_line_items_from_pdf(pdf_path: str) -> List[Dict[str, Any]]:
         print(f"[Error] File not found: {pdf_path}")
         return []
 
-    # Check Mistral configuration
-    if not config.MISTRAL_API_KEY:
-        print("[Error] MISTRAL_API_KEY not configured in .env")
+    if not config.AZURE_MISTRAL_ENDPOINT or not config.AZURE_MISTRAL_API_KEY:
+        print("[Error] AZURE_MISTRAL_ENDPOINT and AZURE_MISTRAL_API_KEY must be configured in .env")
         return []
 
     print(f"[PDF Extractor] Processing: {pdf_path}")
@@ -168,8 +173,8 @@ def extract_line_items_from_pdf(pdf_path: str) -> List[Dict[str, Any]]:
         file_size = os.path.getsize(pdf_path) / 1024  # KB
         print(f"[PDF Extractor] File size: {file_size:.1f} KB")
 
-        # Step 1: Extract text using OCR
-        print(f"[PDF Extractor] Sending to Mistral OCR ({MISTRAL_OCR_MODEL})...")
+        # Step 1: Extract text using Mistral Document AI OCR
+        print(f"[PDF Extractor] Sending to Mistral Document AI ({MISTRAL_DOCUMENT_MODEL})...")
         ocr_text = extract_text_from_pdf(pdf_path)
 
         if not ocr_text:
@@ -178,8 +183,9 @@ def extract_line_items_from_pdf(pdf_path: str) -> List[Dict[str, Any]]:
 
         print(f"[PDF Extractor] OCR extracted {len(ocr_text)} chars")
 
-        # Step 2: Extract structured line items from text
-        print(f"[PDF Extractor] Extracting line items ({MISTRAL_CHAT_MODEL})...")
+        # Step 2: Extract structured line items from text using Azure OpenAI
+        deployment = config.AZURE_OPENAI_CHAT_DEPLOYMENT_NAME
+        print(f"[PDF Extractor] Extracting line items ({deployment})...")
         line_items = extract_line_items_from_text(ocr_text)
 
         if line_items:
@@ -202,7 +208,7 @@ def extract_line_items_from_pdf(pdf_path: str) -> List[Dict[str, Any]]:
 
 
 def parse_json_response(content: str) -> List[Dict[str, Any]]:
-    """Parse JSON array from Mistral response."""
+    """Parse JSON array from model response."""
     try:
         # Try to find JSON array in response
         start = content.find("[")

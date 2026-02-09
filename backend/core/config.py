@@ -76,5 +76,12 @@ LANGFUSE_HOST = os.getenv("LANGFUSE_HOST", "https://cloud.langfuse.com")
 # --- Mistral API ---
 MISTRAL_API_KEY = os.getenv("MISTRAL_API_KEY")
 
+# --- Azure Mistral Document AI ---
+AZURE_MISTRAL_ENDPOINT = os.getenv("AZURE_MISTRAL_ENDPOINT", "")  # e.g. https://<name>.<region>.models.ai.azure.com
+AZURE_MISTRAL_API_KEY = os.getenv("AZURE_MISTRAL_API_KEY", "")
+
+# --- Vendor Config ---
+VENDOR_DEFAULT_EMAIL = os.getenv("VENDOR_DEFAULT_EMAIL", "")
+
 # --- Email Monitor ---
 EMAIL_POLL_INTERVAL = int(os.getenv("EMAIL_POLL_INTERVAL", "60"))

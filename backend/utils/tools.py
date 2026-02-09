@@ -21,6 +21,10 @@ import requests
 
 # Optional Langfuse telemetry
 from utils.langfuse_tracing import trace_tool, trace_operation
+from utils.lifecycle_tracing import (
+    log_job_created, log_quote_request_sent, log_quote_received,
+    log_job_ready, log_job_approved, log_job_cancelled, log_job_duplicated
+)
 
 # --- SMTP Email Services ---
 GMAIL_SMTP_SERVER = "smtp.gmail.com"
@@ -378,7 +382,7 @@ def get_product_price(item_code: str) -> Dict[str, Any]:
                 "found": True,
                 "item_number": product.item_number,
                 "unit_cost": product.unit_cost,
-                "vendor_email": product.vendor_email or config.VENDOR_DEFAULT_EMAIL
+                "vendor_email": config.VENDOR_DEFAULT_EMAIL
             }
         else:
             # Return default vendor if product not found
@@ -420,6 +424,15 @@ def create_costing_request(
         session.add(req)
         session.commit()
         print(f"[CostingRequest] Created {job_id}")
+
+        # Log lifecycle event
+        log_job_created(
+            job_id=job_id,
+            user_id=user_id,
+            quotation_id=quotation_id,
+            description=item_details
+        )
+
         return job_id
     except Exception as e:
         print(f"DB Error: {e}")
@@ -706,8 +719,22 @@ Gulf Craft Costing Team
 
             # Update costing request status
             costing_req.status = "Awaiting Quote"
+
+            # Set quotes_requested_at if this is the first quote request
+            if costing_req.quotes_requested_at is None:
+                costing_req.quotes_requested_at = datetime.now()
+
             session.commit()
             print(f"[Email] Sent price request for {item_name} to {vendor_email}")
+
+            # Log lifecycle event
+            log_quote_request_sent(
+                job_id=job_id,
+                item_name=item_name,
+                vendor_email=vendor_email,
+                item_code=item_code
+            )
+
             return True
     except Exception as e:
         print(f"DB Error: {e}")
@@ -907,6 +934,14 @@ def mark_quote_received(
             pending_req.received_at = datetime.now()
             session.commit()
 
+            # Log lifecycle event
+            log_quote_received(
+                job_id=job_id,
+                item_name=item_name,
+                price=price,
+                vendor_email=pending_req.vendor_email
+            )
+
             # Also update the costing sheet
             update_costing_sheet_with_price(job_id, item_name, price)
 
@@ -1005,6 +1040,9 @@ def check_all_quotes_received(job_id: str) -> Dict[str, Any]:
             ).first()
             if costing_req:
                 costing_req.status = "Completed"
+
+                # Set all_quotes_received_at timestamp
+                costing_req.all_quotes_received_at = datetime.now()
                 session.commit()
 
                 # Recalculate selling price for SharePoint and mark as Ready
@@ -1016,6 +1054,13 @@ def check_all_quotes_received(job_id: str) -> Dict[str, Any]:
                     if item.unit_price is not None:
                         qty = item.quantity or 1
                         total_selling += (item.unit_price * qty * config.PROFIT_MARGIN)
+
+                # Log lifecycle event
+                log_job_ready(
+                    job_id=job_id,
+                    user_id=costing_req.user_id,
+                    total_price=round(total_selling, 2) if total_selling else None
+                )
 
                 update_sharepoint_status(
                     job_id=job_id,
@@ -1324,7 +1369,18 @@ def approve_costing_job(job_id: str, user_id: int) -> Dict[str, Any]:
             return {"success": False, "error": f"Job {job_id} not found"}
 
         costing_req.status = "Approved"
+        costing_req.approved_at = datetime.now()
         session.commit()
+
+        # Log lifecycle event with timestamps for duration scoring
+        log_job_approved(
+            job_id=job_id,
+            user_id=user_id,
+            final_price=costing_req.price,
+            created_at=costing_req.created_at,
+            quotes_requested_at=costing_req.quotes_requested_at,
+            all_quotes_received_at=costing_req.all_quotes_received_at
+        )
 
         # Update SharePoint
         update_sharepoint_status(job_id, status="Approved")
@@ -1370,7 +1426,8 @@ def duplicate_costing_job(job_id: str, user_id: int, new_description: str = None
             quotation_id=original_job.quotation_id,
             line_num=original_job.line_num,
             item_details=new_description or f"Copy of {original_job.item_details}",
-            status="Completed"
+            status="Completed",
+            original_job_id=job_id  # Track job lineage
         )
         session.add(new_job)
         session.flush()
@@ -1396,6 +1453,13 @@ def duplicate_costing_job(job_id: str, user_id: int, new_description: str = None
         session.commit()
 
         print(f"[DuplicateJob] Created {new_job_id} from {job_id}")
+
+        # Log lifecycle event
+        log_job_duplicated(
+            original_job_id=job_id,
+            new_job_id=new_job_id,
+            user_id=user_id
+        )
 
         # Generate costing sheet for new job
         items_for_sheet = []
@@ -1446,7 +1510,14 @@ def cancel_costing_job(job_id: str, user_id: int) -> Dict[str, Any]:
             return {"success": False, "error": f"Job {job_id} not found"}
 
         costing_req.status = "Cancelled"
+        costing_req.cancelled_at = datetime.now()
         session.commit()
+
+        # Log lifecycle event
+        log_job_cancelled(
+            job_id=job_id,
+            user_id=user_id
+        )
 
         # Update SharePoint
         update_sharepoint_status(job_id, status="Cancelled")

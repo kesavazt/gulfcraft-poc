@@ -105,6 +105,15 @@ class CostingRequest(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
+    # Lifecycle timestamp fields for duration tracking
+    quotes_requested_at = Column(DateTime(timezone=True), nullable=True)  # When first quote request was sent
+    all_quotes_received_at = Column(DateTime(timezone=True), nullable=True)  # When all quotes were received (job ready)
+    approved_at = Column(DateTime(timezone=True), nullable=True)  # When job was approved
+    cancelled_at = Column(DateTime(timezone=True), nullable=True)  # When job was cancelled
+
+    # Job lineage for duplicated jobs
+    original_job_id = Column(String, nullable=True)  # Reference to parent job if duplicated
+
     user = relationship("User")
     line_items = relationship("CostingLineItem", back_populates="costing_request")
 

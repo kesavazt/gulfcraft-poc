@@ -22,11 +22,6 @@ export const login = async (username, password) => {
     return response.data;
 };
 
-export const register = async (username, password, role = 'user') => {
-    const response = await api.post('/auth/register', { username, password, role });
-    return response.data;
-};
-
 export const sendMessage = async (message, conversationId, state = null) => {
     const response = await api.post('/chat', { message, conversation_id: conversationId, state });
     return response.data;

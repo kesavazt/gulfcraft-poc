@@ -65,7 +65,7 @@ def _resolve_prices(estimation_items: list, threshold: float):
 
             # Store products table price for tracking
             costing_item["products_table_price"] = products_price
-            costing_item["vendor_email"] = product_info.get("vendor_email", "vinod.ihava@gulfcraftinc.com")
+            costing_item["vendor_email"] = config.VENDOR_DEFAULT_EMAIL
 
             if products_price is not None and products_price <= threshold:
                 costing_item["unit_price"] = products_price

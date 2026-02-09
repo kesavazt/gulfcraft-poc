@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { useNavigate, Link } from 'react-router-dom';
+import { useNavigate } from 'react-router-dom';
 import { login } from '../api';
 import { ArrowRight, Loader2 } from 'lucide-react';
 
@@ -79,14 +79,6 @@ export default function Login() {
                     </button>
                 </form>
 
-                <div className="mt-8 text-center">
-                    <p className="text-gray-500 text-sm">
-                        Don't have an account?{' '}
-                        <Link to="/register" className="text-brand-600 font-semibold hover:text-brand-700 transition-colors">
-                            Create Account
-                        </Link>
-                    </p>
-                </div>
             </div>
         </div>
     );
