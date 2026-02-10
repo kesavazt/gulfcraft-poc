@@ -1246,6 +1246,181 @@ def remove_line_item_from_job(job_id: str, item_identifier: str) -> Dict[str, An
         session.close()
 
 
+def search_products_for_agent(query: str, limit: int = 10) -> Dict[str, Any]:
+    """
+    Search for products across Products and EstimationLines tables.
+    Used by the edit job agent to find items when adding to a job.
+    Returns:
+        {"found": True/False, "results": [...], "message": "..."}
+    """
+    if not query or len(query) < 2:
+        return {"found": False, "results": [], "message": "Search query too short (min 2 characters)"}
+
+    session = SessionLocal()
+    try:
+        search_pattern = f"%{query}%"
+        results = []
+        seen_items = set()
+
+        # Search Products table by item_number (code) — these have no item_name
+        products = session.query(Product).filter(
+            Product.item_number.ilike(search_pattern)
+        ).limit(20).all()
+
+        for product in products:
+            item_key = product.item_number
+            if item_key not in seen_items:
+                results.append({
+                    "item_code": product.item_number,
+                    "item_name": product.item_number,  # Code used as name (no name field)
+                    "unit_cost": float(product.unit_cost) if product.unit_cost else None,
+                    "vendor_email": config.VENDOR_DEFAULT_EMAIL,
+                    "source": "product",
+                    "has_name": False,
+                })
+                seen_items.add(item_key)
+
+        # Search EstimationLines by item_name (description)
+        estimation_items = session.query(EstimationLines).filter(
+            EstimationLines.item_name.ilike(search_pattern)
+        ).limit(20).all()
+
+        for item in estimation_items:
+            item_key = item.std_item_code or item.item_name
+            if item_key not in seen_items:
+                product_price = None
+                if item.std_item_code:
+                    product = session.query(Product).filter(
+                        Product.item_number == item.std_item_code
+                    ).first()
+                    if product:
+                        product_price = float(product.unit_cost) if product.unit_cost else None
+
+                results.append({
+                    "item_code": item.std_item_code or "",
+                    "item_name": item.item_name,
+                    "unit_cost": product_price or (float(item.sales_price) if item.sales_price else None),
+                    "vendor_email": config.VENDOR_DEFAULT_EMAIL,
+                    "source": "estimation",
+                    "has_name": True,
+                })
+                seen_items.add(item_key)
+
+        # Also search EstimationLines by std_item_code
+        if len(results) < 10:
+            estimation_by_code = session.query(EstimationLines).filter(
+                EstimationLines.std_item_code.ilike(search_pattern)
+            ).limit(20).all()
+
+            for item in estimation_by_code:
+                item_key = item.std_item_code or item.item_name
+                if item_key not in seen_items:
+                    product_price = None
+                    if item.std_item_code:
+                        product = session.query(Product).filter(
+                            Product.item_number == item.std_item_code
+                        ).first()
+                        if product:
+                            product_price = float(product.unit_cost) if product.unit_cost else None
+
+                    results.append({
+                        "item_code": item.std_item_code or "",
+                        "item_name": item.item_name,
+                        "unit_cost": product_price or (float(item.sales_price) if item.sales_price else None),
+                        "vendor_email": config.VENDOR_DEFAULT_EMAIL,
+                        "source": "estimation",
+                        "has_name": True,
+                    })
+                    seen_items.add(item_key)
+
+        # Sort by relevance
+        q_lower = query.lower()
+        def sort_key(item):
+            name_lower = item["item_name"].lower()
+            code_lower = (item["item_code"] or "").lower()
+            if name_lower == q_lower or code_lower == q_lower:
+                return 0
+            elif name_lower.startswith(q_lower) or code_lower.startswith(q_lower):
+                return 1
+            else:
+                return 2
+
+        results.sort(key=sort_key)
+        results = results[:limit]
+
+        if not results:
+            return {
+                "found": False,
+                "results": [],
+                "message": f"No products found matching '{query}'. Note: many products only have item codes (e.g., ABC-123) without descriptive names. Try searching by item code instead."
+            }
+
+        return {
+            "found": True,
+            "results": results,
+            "message": f"Found {len(results)} product(s) matching '{query}'"
+        }
+    except Exception as e:
+        print(f"[SearchProductsForAgent] Error: {e}")
+        return {"found": False, "results": [], "message": f"Search error: {str(e)}"}
+    finally:
+        session.close()
+
+
+def find_matching_line_items(job_id: str, item_identifier: str) -> Dict[str, Any]:
+    """
+    Find line items matching the identifier. Returns all matches for disambiguation.
+    Returns:
+        {"match": "exact", "items": [single_item]} if exact ID or single name match
+        {"match": "multiple", "items": [item1, item2, ...]} if ambiguous
+        {"match": "none", "items": [], "error": "..."} if nothing found
+    """
+    session = SessionLocal()
+    try:
+        costing_req = session.query(CostingRequest).filter(
+            CostingRequest.job_id == job_id
+        ).first()
+        if not costing_req:
+            return {"match": "none", "items": [], "error": f"Job {job_id} not found"}
+
+        def _item_dict(li):
+            return {
+                "id": li.id,
+                "item_name": li.item_name,
+                "item_code": li.item_code,
+                "quantity": li.quantity,
+                "unit_price": li.unit_price,
+                "price_status": li.price_status,
+            }
+
+        # Try exact ID match first
+        if item_identifier.isdigit():
+            line_item = session.query(CostingLineItem).filter(
+                CostingLineItem.id == int(item_identifier),
+                CostingLineItem.costing_request_id == costing_req.id
+            ).first()
+            if line_item:
+                return {"match": "exact", "items": [_item_dict(line_item)]}
+
+        # Name-based search returning ALL matches
+        matches = session.query(CostingLineItem).filter(
+            CostingLineItem.costing_request_id == costing_req.id,
+            CostingLineItem.item_name.ilike(f"%{item_identifier}%")
+        ).all()
+
+        if len(matches) == 0:
+            return {"match": "none", "items": [], "error": f"No item matching '{item_identifier}' found in job {job_id}"}
+        elif len(matches) == 1:
+            return {"match": "exact", "items": [_item_dict(matches[0])]}
+        else:
+            return {"match": "multiple", "items": [_item_dict(m) for m in matches]}
+    except Exception as e:
+        print(f"[FindMatchingItems] Error: {e}")
+        return {"match": "none", "items": [], "error": str(e)}
+    finally:
+        session.close()
+
+
 @trace_tool
 def update_line_item(
     job_id: str,

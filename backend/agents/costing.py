@@ -243,6 +243,7 @@ def costing_node(state: AgentState):
     return {
         "messages": [AIMessage(content=response)],
         "job_id": job_id,
+        "last_mentioned_job_id": job_id,
         "estimation_items": estimation_items,
         "costing_items": costing_items,
         "pending_quote_items": pending_quote_items,

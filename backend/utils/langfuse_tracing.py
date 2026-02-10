@@ -82,7 +82,8 @@ def trace_context(trace_id: str, user_id: Optional[int] = None, metadata: Option
         print(f"[Langfuse] Trace context error: {e}")
         if observation:
             try:
-                observation.end(output={"error": str(e)}, status_message=str(e), level="ERROR")
+                observation.update(output={"error": str(e)})
+                observation.end()
             except:
                 pass
         yield None
@@ -128,7 +129,8 @@ def session_context(session_id: str, metadata: Optional[Dict] = None):
         print(f"[Langfuse] Session context error: {e}")
         if observation:
             try:
-                observation.end(output={"error": str(e)}, status_message=str(e), level="ERROR")
+                observation.update(output={"error": str(e)})
+                observation.end()
             except:
                 pass
         yield None
@@ -185,7 +187,8 @@ class span_context:
         if self.observation:
             try:
                 if exc_type:
-                    self.observation.end(output={"error": str(exc_val), "traceback": traceback.format_exc()}, status_message=str(exc_val), level="ERROR")
+                    self.observation.update(output={"error": str(exc_val), "traceback": traceback.format_exc()})
+                    self.observation.end()
                 else:
                     self.observation.end()
             except Exception as e:

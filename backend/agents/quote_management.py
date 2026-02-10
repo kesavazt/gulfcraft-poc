@@ -60,6 +60,11 @@ def quote_management_node(state: AgentState):
     # Extract parameters
     params = _extract_quote_parameters(user_message, state)
 
+    # If disambiguation is pending and user didn't trigger a new operation, treat as disambiguation response
+    pending = state.get("pending_disambiguation")
+    if pending and (not params or not params.get("operation")):
+        params = {"operation": pending.get("operation", "enter_quote"), "job_id": pending.get("job_id")}
+
     if not params or not params.get("operation"):
         return {
             "messages": [AIMessage(content=
@@ -93,6 +98,78 @@ def quote_management_node(state: AgentState):
         item_identifier = params.get("item_identifier")
         quoted_price = params.get("quoted_price")
 
+        # Sanitize price: strip currency symbols/text and convert to float
+        if quoted_price is not None:
+            try:
+                import re
+                cleaned = re.sub(r'[^\d.]', '', str(quoted_price))
+                quoted_price = float(cleaned)
+            except (ValueError, TypeError):
+                quoted_price = None
+
+        # Check if user is responding to a disambiguation prompt
+        pending = state.get("pending_disambiguation")
+        if pending and pending.get("operation") == "enter_quote":
+            # User is selecting from disambiguation options
+            selection = user_message.strip()
+            items = pending.get("items", [])
+            selected_item = None
+
+            # Try numeric selection (1, 2, 3...)
+            if selection.isdigit():
+                idx = int(selection) - 1
+                if 0 <= idx < len(items):
+                    selected_item = items[idx]
+
+            # Try direct ID match
+            if not selected_item:
+                for item in items:
+                    if str(item["id"]) == selection:
+                        selected_item = item
+                        break
+
+            if selected_item:
+                price = pending.get("quoted_price", quoted_price)
+                success = tools.mark_quote_received_by_id(
+                    line_item_id=selected_item["id"],
+                    price=price,
+                    job_id=pending.get("job_id", job_id)
+                )
+                if success:
+                    response_msg = (
+                        f"✅ Quote entered for job **{pending.get('job_id', job_id)}**\n\n"
+                        f"- Item: {selected_item['item_name']}\n"
+                        f"- Price: {price} AED\n\n"
+                        f"The costing sheet has been updated."
+                    )
+                    quote_status = tools.check_all_quotes_received(pending.get("job_id", job_id))
+                    if quote_status.get("all_received"):
+                        response_msg += f"\n\n🎉 **All quotes received!** Job is now ready for review."
+                    else:
+                        pending_items = quote_status.get("pending_items", [])
+                        response_msg += (
+                            f"\n\n⏳ Still waiting for {len(pending_items)} quote(s): "
+                            f"{', '.join(pending_items[:3])}"
+                            f"{'...' if len(pending_items) > 3 else ''}"
+                        )
+                else:
+                    response_msg = f"❌ Failed to apply quote to {selected_item['item_name']}."
+                return {
+                    "messages": [AIMessage(content=response_msg)],
+                    "last_mentioned_job_id": pending.get("job_id", job_id),
+                    "last_action": operation,
+                    "pending_disambiguation": None,
+                }
+            else:
+                response_msg = (
+                    f"Please select a valid item number (1-{len(items)}) from the list above."
+                )
+                return {
+                    "messages": [AIMessage(content=response_msg)],
+                    "last_mentioned_job_id": pending.get("job_id", job_id),
+                    "pending_disambiguation": pending,
+                }
+
         if not item_identifier or quoted_price is None:
             response_msg = (
                 "To enter a quote, I need:\n"
@@ -101,37 +178,61 @@ def quote_management_node(state: AgentState):
                 "Example: 'The hydraulic pump was quoted at 1200 AED'"
             )
         else:
-            result = tools.enter_manual_quote(
-                job_id=job_id,
-                item_identifier=item_identifier,
-                quoted_price=quoted_price,
-                vendor_email=params.get("vendor_email")
-            )
+            # Check for ambiguous matches before applying
+            match_result = tools.find_matching_line_items(job_id, item_identifier)
 
-            if result.get("success"):
+            if match_result["match"] == "multiple":
+                items = match_result["items"]
+                options = "\n".join([
+                    f"  {i+1}. **{item['item_name']}** (ID: {item['id']}, "
+                    f"Status: {item.get('price_status', 'unknown')})"
+                    for i, item in enumerate(items)
+                ])
                 response_msg = (
-                    f"✅ Quote entered successfully for job **{job_id}**\n\n"
-                    f"- Item: {item_identifier}\n"
-                    f"- Price: {quoted_price} AED\n\n"
-                    f"The costing sheet has been updated with the new price. "
-                    f"I'll check if all quotes for this job have been received..."
+                    f"I found **{len(items)} items** matching '{item_identifier}' "
+                    f"in job **{job_id}**:\n\n{options}\n\n"
+                    f"Which item should I apply the **{quoted_price} AED** quote to? "
+                    f"Reply with the item number (1-{len(items)})."
                 )
-
-                # Check if all quotes received
-                quote_status = tools.check_all_quotes_received(job_id)
-                if quote_status.get("all_received"):
-                    response_msg += (
-                        f"\n\n🎉 **All quotes received!** Job {job_id} is now ready for review."
+                return {
+                    "messages": [AIMessage(content=response_msg)],
+                    "last_mentioned_job_id": job_id,
+                    "pending_disambiguation": {
+                        "items": items,
+                        "quoted_price": quoted_price,
+                        "job_id": job_id,
+                        "operation": "enter_quote",
+                    },
+                }
+            elif match_result["match"] == "exact":
+                item = match_result["items"][0]
+                success = tools.mark_quote_received_by_id(
+                    line_item_id=item["id"],
+                    price=quoted_price,
+                    job_id=job_id
+                )
+                if success:
+                    response_msg = (
+                        f"✅ Quote entered for job **{job_id}**\n\n"
+                        f"- Item: {item['item_name']}\n"
+                        f"- Price: {quoted_price} AED\n\n"
+                        f"The costing sheet has been updated."
                     )
+                    quote_status = tools.check_all_quotes_received(job_id)
+                    if quote_status.get("all_received"):
+                        response_msg += f"\n\n🎉 **All quotes received!** Job {job_id} is now ready for review."
+                    else:
+                        pending_items = quote_status.get("pending_items", [])
+                        response_msg += (
+                            f"\n\n⏳ Still waiting for {len(pending_items)} quote(s): "
+                            f"{', '.join(pending_items[:3])}"
+                            f"{'...' if len(pending_items) > 3 else ''}"
+                        )
                 else:
-                    pending = quote_status.get("pending_items", [])
-                    response_msg += (
-                        f"\n\n⏳ Still waiting for {len(pending)} quote(s): "
-                        f"{', '.join(pending[:3])}"
-                        f"{'...' if len(pending) > 3 else ''}"
-                    )
+                    response_msg = f"❌ Failed to enter quote for {item['item_name']}."
             else:
-                response_msg = f"❌ Failed to enter quote: {result.get('error', 'Unknown error')}"
+                fallback_msg = f'No item matching "{item_identifier}" found in job {job_id}.'
+                response_msg = f"❌ {match_result.get('error', fallback_msg)}"
 
     elif operation == "resend_quote":
         item_name = params.get("item_identifier")
@@ -184,5 +285,6 @@ def quote_management_node(state: AgentState):
     return {
         "messages": [AIMessage(content=response_msg)],
         "last_mentioned_job_id": job_id,
-        "last_action": operation
+        "last_action": operation,
+        "pending_disambiguation": None,
     }

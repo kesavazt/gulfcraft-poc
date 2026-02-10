@@ -176,6 +176,11 @@ def invoke_agent(message: str, user_id: int = 1, threshold: float = 1000.0, conv
             inputs["last_action"] = session_state["last_action"]
         if session_state.get("last_vendor_email"):
             inputs["last_vendor_email"] = session_state["last_vendor_email"]
+        # Fallback: use job_id as last_mentioned_job_id if not set
+        if not inputs.get("last_mentioned_job_id") and session_state.get("job_id"):
+            inputs["last_mentioned_job_id"] = session_state["job_id"]
+        if session_state.get("pending_disambiguation"):
+            inputs["pending_disambiguation"] = session_state["pending_disambiguation"]
 
 
     response_messages = []
@@ -206,9 +211,10 @@ def invoke_agent(message: str, user_id: int = 1, threshold: float = 1000.0, conv
             "similar_quotations": final_state.get("similar_quotations"),
             "selected_quotation": final_state.get("selected_quotation"),
             # Context tracking
-            "last_mentioned_job_id": final_state.get("last_mentioned_job_id"),
+            "last_mentioned_job_id": final_state.get("last_mentioned_job_id") or final_state.get("job_id"),
             "last_action": final_state.get("last_action"),
-            "last_vendor_email": final_state.get("last_vendor_email")
+            "last_vendor_email": final_state.get("last_vendor_email"),
+            "pending_disambiguation": final_state.get("pending_disambiguation")
         }
 
     }

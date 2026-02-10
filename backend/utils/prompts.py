@@ -70,7 +70,11 @@ Routing Logic:
 IMPORTANT:
 - NEVER route directly to 'CostingAgent' (only called via SelectionAgent)
 - Each new quotation request starts fresh with SearchAgent
-- Use conversation context to infer job_id when not explicitly stated"""
+- Use conversation context to infer job_id when not explicitly stated
+- If the user replies with just a number (e.g., "1", "2", "3") and the previous assistant message listed items to choose from (disambiguation):
+  - If the previous message was about editing/adding/removing/updating items in a job, route to 'EditJobAgent'
+  - If the previous message was about entering vendor quotes or quote management, route to 'QuoteManagementAgent'
+- If the user replies "yes"/"no" and the previous assistant message asked about adding a custom item or confirming an edit operation, route to 'EditJobAgent'"""
 
 
 # =============================================================================
@@ -183,10 +187,13 @@ Determine:
 2. job_id (use context if not explicitly stated)
 3. Relevant parameters based on operation type
 
-For add_item: item_name, item_code, quantity, unit_price, vendor_email
+For add_item: item_name, item_code, quantity, unit_price (numeric value only, no currency symbols), vendor_email
 For remove_item: item_identifier (name or id)
-For update_item: item_identifier, new_quantity, new_unit_price, new_item_name, new_item_code
+For update_item: item_identifier, new_quantity, new_unit_price (numeric value only, no currency symbols), new_item_name, new_item_code
 For update_description: new_description
+
+IMPORTANT: If the user message is just a number (like "1", "2", "3") or a simple confirmation ("yes", "no"), return an empty JSON object {{}}.
+These are disambiguation responses, NOT new operations.
 
 Return a JSON object with extracted parameters."""
 
@@ -229,7 +236,7 @@ Determine:
 1. Operation: enter_quote, resend_quote, cancel_quote
 2. job_id
 3. item_identifier (name or id)
-4. quoted_price (for enter_quote operations)
+4. quoted_price (numeric value only, no currency symbols or text e.g. 1200 not "1200 AED")
 5. vendor_email (optional)
 
 Return JSON with extracted parameters."""
@@ -314,7 +321,7 @@ User message: "{user_message}"
 Determine:
 1. Query type: price_history, average_price, price_comparison
 2. item_code or item_name
-3. For comparisons: current_price to compare against
+3. For comparisons: current_price (numeric value only, no currency symbols or text e.g. 1500 not "1500 AED")
 
 Return JSON with extracted parameters."""
 

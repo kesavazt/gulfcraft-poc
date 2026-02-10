@@ -67,6 +67,28 @@ export const approveJob = async (jobId) => {
     return response.data;
 };
 
+export const uploadQuotePdf = async (file, jobId, conversationId = null) => {
+    const formData = new FormData();
+    formData.append('file', file);
+    formData.append('job_id', jobId);
+    if (conversationId) {
+        formData.append('conversation_id', String(conversationId));
+    }
+    const response = await api.post('/chat/upload-quote', formData, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+        timeout: 120000,
+    });
+    return response.data;
+};
+
+export const confirmQuoteMatches = async (jobId, matches) => {
+    const response = await api.post('/chat/confirm-quote-matches', {
+        job_id: jobId,
+        matches,
+    });
+    return response.data;
+};
+
 export const downloadFile = (downloadUrl) => {
     // Create a temporary link to trigger the download
     const token = localStorage.getItem('token');

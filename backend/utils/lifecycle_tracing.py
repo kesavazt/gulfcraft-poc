@@ -5,9 +5,10 @@ Provides duration tracking and lifecycle event logging for costing jobs.
 Uses Langfuse for trace storage and database timestamps for persistence.
 """
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 from enum import Enum
+import uuid
 
 from utils.langfuse_tracing import _get_langfuse_client, span_context, trace_operation
 
@@ -55,12 +56,12 @@ def log_lifecycle_event(
             **(metadata or {})
         }
 
-        # Create a trace for this lifecycle event with job_id as session
+        # Create an observation for this lifecycle event
+        event_metadata["session_id"] = job_id  # Track job grouping in metadata
         observation = client.start_observation(
             name=event.value,
             as_type="event",
-            metadata=event_metadata,
-            session_id=job_id  # Group all events for a job together
+            metadata=event_metadata
         )
         observation.end()
         client.flush()
@@ -171,35 +172,48 @@ def log_job_approved(
     client = _get_langfuse_client()
     if client and created_at:
         try:
-            approved_at = datetime.utcnow()
+            approved_at = datetime.now(timezone.utc)
+
+            # Ensure created_at is timezone-aware for subtraction
+            if created_at.tzinfo is None:
+                created_at = created_at.replace(tzinfo=timezone.utc)
+
+            # Generate a valid 32-char hex trace ID from job_id
+            trace_id = uuid.uuid5(uuid.NAMESPACE_URL, f"job_{job_id}").hex
 
             # Total time to approval (hours)
             total_hours = (approved_at - created_at).total_seconds() / 3600
             client.score(
                 name="time_to_approval_hours",
                 value=round(total_hours, 2),
-                trace_id=job_id,
-                comment=f"Total: {total_hours:.1f}h from creation to approval"
+                trace_id=trace_id,
+                comment=f"Job {job_id}: {total_hours:.1f}h from creation to approval"
             )
 
             # Quote wait time (if applicable)
             if quotes_requested_at and all_quotes_received_at:
+                if quotes_requested_at.tzinfo is None:
+                    quotes_requested_at = quotes_requested_at.replace(tzinfo=timezone.utc)
+                if all_quotes_received_at.tzinfo is None:
+                    all_quotes_received_at = all_quotes_received_at.replace(tzinfo=timezone.utc)
                 quote_wait_hours = (all_quotes_received_at - quotes_requested_at).total_seconds() / 3600
                 client.score(
                     name="quote_wait_time_hours",
                     value=round(quote_wait_hours, 2),
-                    trace_id=job_id,
-                    comment=f"Waited {quote_wait_hours:.1f}h for all quotes"
+                    trace_id=trace_id,
+                    comment=f"Job {job_id}: Waited {quote_wait_hours:.1f}h for all quotes"
                 )
 
             # Time from ready to approval
             if all_quotes_received_at:
+                if all_quotes_received_at.tzinfo is None:
+                    all_quotes_received_at = all_quotes_received_at.replace(tzinfo=timezone.utc)
                 approval_delay_hours = (approved_at - all_quotes_received_at).total_seconds() / 3600
                 client.score(
                     name="approval_delay_hours",
                     value=round(approval_delay_hours, 2),
-                    trace_id=job_id,
-                    comment=f"Ready to approved: {approval_delay_hours:.1f}h"
+                    trace_id=trace_id,
+                    comment=f"Job {job_id}: Ready to approved: {approval_delay_hours:.1f}h"
                 )
 
             client.flush()
@@ -313,7 +327,9 @@ def calculate_job_durations(
         }
 
     # Current status duration (if still in progress)
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
+    if created_at.tzinfo is None:
+        created_at = created_at.replace(tzinfo=timezone.utc)
     if not approved_at and not cancelled_at:
         duration = now - created_at
         durations["time_since_creation"] = {
@@ -449,7 +465,7 @@ def get_aggregate_metrics(
 
     session = SessionLocal()
     try:
-        cutoff_date = datetime.utcnow() - timedelta(days=days)
+        cutoff_date = datetime.now(timezone.utc) - timedelta(days=days)
 
         query = session.query(CostingRequest).filter(
             CostingRequest.created_at >= cutoff_date

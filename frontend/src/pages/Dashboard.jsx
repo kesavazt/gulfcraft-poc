@@ -1,9 +1,97 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { MessageSquare, List, Send, LogOut, User, Download, RefreshCw, CheckCircle, Clock, DollarSign, FileText, X, Edit2, Check, AlertCircle, Trash2, Plus, Search } from 'lucide-react';
+import { MessageSquare, List, Send, LogOut, User, Download, RefreshCw, CheckCircle, Clock, DollarSign, FileText, X, Edit2, Check, AlertCircle, Trash2, Plus, Search, Paperclip } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { sendMessage, getRequests, getUser, downloadFile, updateLineItem, approveJob, searchProducts, addLineItem, deleteLineItem } from '../api';
+import { sendMessage, getRequests, getUser, downloadFile, updateLineItem, approveJob, searchProducts, addLineItem, deleteLineItem, uploadQuotePdf, confirmQuoteMatches } from '../api';
+
+function QuoteMatchCard({ matches, jobId, onConfirm }) {
+    const [selections, setSelections] = useState(
+        matches.map(m => ({ ...m, apply: m.confidence >= 0.7 }))
+    );
+    const [confirming, setConfirming] = useState(false);
+    const [confirmed, setConfirmed] = useState(false);
+
+    const toggleMatch = (idx) => {
+        setSelections(prev => prev.map((s, i) => i === idx ? { ...s, apply: !s.apply } : s));
+    };
+
+    const handleConfirm = async () => {
+        setConfirming(true);
+        await onConfirm(jobId, selections.map(s => ({
+            line_item_id: s.line_item_id,
+            price: s.ocr_unit_price,
+            apply: s.apply
+        })));
+        setConfirming(false);
+        setConfirmed(true);
+    };
+
+    if (confirmed) {
+        return (
+            <div className="mt-4 p-4 bg-green-50 border border-green-200 rounded-xl">
+                <p className="text-green-700 font-medium text-sm">Quotes applied successfully!</p>
+            </div>
+        );
+    }
+
+    return (
+        <div className="mt-4 bg-white rounded-xl border border-gray-200 overflow-hidden shadow-sm w-full max-w-3xl">
+            <div className="px-4 py-3 bg-blue-50 border-b border-blue-100">
+                <h4 className="text-sm font-semibold text-blue-800">Review Matched Quote Items</h4>
+                <p className="text-xs text-blue-600 mt-1">Select which prices to apply from the vendor quote</p>
+            </div>
+            <div className="overflow-x-auto">
+                <table className="min-w-full divide-y divide-gray-200 text-sm">
+                    <thead className="bg-gray-50">
+                        <tr>
+                            <th className="px-3 py-2 text-center w-10">Apply</th>
+                            <th className="px-3 py-2 text-left">Vendor Item</th>
+                            <th className="px-3 py-2 text-left">Matched To</th>
+                            <th className="px-3 py-2 text-right">Price (AED)</th>
+                            <th className="px-3 py-2 text-center">Confidence</th>
+                        </tr>
+                    </thead>
+                    <tbody className="divide-y divide-gray-100">
+                        {selections.map((match, idx) => (
+                            <tr key={idx} className="hover:bg-gray-50/50">
+                                <td className="px-3 py-2 text-center">
+                                    <input
+                                        type="checkbox"
+                                        checked={match.apply}
+                                        onChange={() => toggleMatch(idx)}
+                                        className="rounded border-gray-300 text-brand-600 focus:ring-brand-500"
+                                    />
+                                </td>
+                                <td className="px-3 py-2 text-gray-600">{match.ocr_item_name}</td>
+                                <td className="px-3 py-2 font-medium text-gray-900">{match.pending_item_name}</td>
+                                <td className="px-3 py-2 text-right font-bold">{match.ocr_unit_price?.toFixed(2)}</td>
+                                <td className="px-3 py-2 text-center">
+                                    <span className={`px-2 py-0.5 rounded-full text-xs font-bold ${
+                                        match.confidence >= 0.9 ? 'bg-green-100 text-green-700' :
+                                        match.confidence >= 0.7 ? 'bg-yellow-100 text-yellow-700' :
+                                        'bg-red-100 text-red-700'
+                                    }`}>
+                                        {(match.confidence * 100).toFixed(0)}%
+                                    </span>
+                                </td>
+                            </tr>
+                        ))}
+                    </tbody>
+                </table>
+            </div>
+            <div className="px-4 py-3 bg-gray-50 flex justify-end gap-2 border-t border-gray-100">
+                <button
+                    onClick={handleConfirm}
+                    disabled={confirming || !selections.some(s => s.apply)}
+                    className="px-6 py-2 bg-brand-600 text-white text-sm font-bold rounded-xl hover:bg-brand-700 disabled:opacity-50 transition-all shadow-sm"
+                >
+                    {confirming ? 'Applying...' : `Apply ${selections.filter(s => s.apply).length} Price(s)`}
+                </button>
+            </div>
+        </div>
+    );
+}
 
 export default function Dashboard() {
     const [activeTab, setActiveTab] = useState('chat');
@@ -24,6 +112,11 @@ export default function Dashboard() {
     const [searchQuery, setSearchQuery] = useState('');
     const [searchResults, setSearchResults] = useState([]);
     const [searchLoading, setSearchLoading] = useState(false);
+    const fileInputRef = useRef(null);
+    const [uploadLoading, setUploadLoading] = useState(false);
+    const [showUploadModal, setShowUploadModal] = useState(false);
+    const [uploadJobId, setUploadJobId] = useState('');
+    const [uploadFile, setUploadFile] = useState(null);
 
     useEffect(() => {
         const fetchUser = async () => {
@@ -81,6 +174,68 @@ export default function Dashboard() {
             console.error("Failed to send message", error);
         } finally {
             setLoading(false);
+        }
+    };
+
+    const handleFileSelected = (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+        if (!file.name.toLowerCase().endsWith('.pdf')) {
+            setMessages(prev => [...prev, { sender: 'ai', content: 'Please select a PDF file.' }]);
+            return;
+        }
+        setUploadFile(file);
+        const currentJobId = agentState?.last_mentioned_job_id || agentState?.job_id;
+        if (currentJobId) {
+            setUploadJobId(currentJobId);
+            handleUploadQuote(file, currentJobId);
+        } else {
+            setShowUploadModal(true);
+        }
+        e.target.value = '';
+    };
+
+    const handleUploadQuote = async (file, jobId) => {
+        setUploadLoading(true);
+        setMessages(prev => [...prev, { sender: 'user', content: `Uploading vendor quote: ${file.name} for job ${jobId}` }]);
+
+        try {
+            const result = await uploadQuotePdf(file, jobId, conversationId);
+            if (result.matches && result.matches.length > 0) {
+                setMessages(prev => [...prev, {
+                    sender: 'ai',
+                    content: `Extracted **${result.extracted_count}** items from the PDF and matched **${result.matches.length}** to pending quotes for job **${jobId}**. Review the matches below and confirm which prices to apply.`,
+                    quoteMatches: result
+                }]);
+            } else {
+                setMessages(prev => [...prev, {
+                    sender: 'ai',
+                    content: result.message || 'No matching items found in the uploaded PDF.'
+                }]);
+            }
+        } catch (error) {
+            console.error('Upload failed:', error);
+            setMessages(prev => [...prev, { sender: 'ai', content: 'Failed to process the uploaded PDF. Please try again.' }]);
+        } finally {
+            setUploadLoading(false);
+            setUploadFile(null);
+        }
+    };
+
+    const handleConfirmMatches = async (jobId, matchSelections) => {
+        try {
+            const result = await confirmQuoteMatches(jobId, matchSelections);
+            let msg = `Applied **${result.applied_count}** quote price(s) to job **${jobId}**.`;
+            if (result.all_quotes_received) {
+                msg += '\n\nAll quotes received! Job is now ready for review.';
+            } else if (result.pending_items?.length > 0) {
+                msg += `\n\nStill waiting for ${result.pending_items.length} quote(s).`;
+            }
+            setMessages(prev => [...prev, { sender: 'ai', content: msg }]);
+            fetchRequests();
+        } catch (error) {
+            console.error('Confirm failed:', error);
+            setMessages(prev => [...prev, { sender: 'ai', content: 'Failed to apply quotes. Please try again.' }]);
         }
     };
 
@@ -388,6 +543,14 @@ export default function Dashboard() {
                                                 )}
                                             </div>
 
+                                            {msg.quoteMatches && msg.quoteMatches.matches?.length > 0 && (
+                                                <QuoteMatchCard
+                                                    matches={msg.quoteMatches.matches}
+                                                    jobId={msg.quoteMatches.job_id}
+                                                    onConfirm={handleConfirmMatches}
+                                                />
+                                            )}
+
                                             {msg.similar_quotations && msg.similar_quotations.length > 0 && (
                                                 <div className="mt-4 bg-white rounded-xl border border-gray-200 overflow-hidden shadow-sm w-full max-w-3xl">
                                                     <div className="px-4 py-3 bg-gray-50 border-b border-gray-200">
@@ -443,12 +606,28 @@ export default function Dashboard() {
                                 <div className="p-6 border-t border-gray-100 bg-white">
                                     <form onSubmit={handleSend} className="relative max-w-4xl mx-auto">
                                         <input
+                                            type="file"
+                                            ref={fileInputRef}
+                                            accept=".pdf"
+                                            className="hidden"
+                                            onChange={handleFileSelected}
+                                        />
+                                        <input
                                             type="text"
                                             value={input}
                                             onChange={(e) => setInput(e.target.value)}
                                             placeholder="Type your message..."
-                                            className="w-full pl-6 pr-14 py-4 bg-gray-50 border border-gray-200 rounded-2xl focus:ring-2 focus:ring-brand-500/20 focus:border-brand-500 transition-all outline-none text-gray-700 placeholder-gray-400 shadow-sm"
+                                            className="w-full pl-6 pr-24 py-4 bg-gray-50 border border-gray-200 rounded-2xl focus:ring-2 focus:ring-brand-500/20 focus:border-brand-500 transition-all outline-none text-gray-700 placeholder-gray-400 shadow-sm"
                                         />
+                                        <button
+                                            type="button"
+                                            onClick={() => fileInputRef.current?.click()}
+                                            disabled={uploadLoading}
+                                            className="absolute right-14 top-1/2 -translate-y-1/2 p-2.5 text-gray-400 hover:text-brand-600 rounded-xl transition-all disabled:opacity-50"
+                                            title="Upload vendor quote PDF"
+                                        >
+                                            {uploadLoading ? <RefreshCw className="h-5 w-5 animate-spin" /> : <Paperclip className="h-5 w-5" />}
+                                        </button>
                                         <button
                                             type="submit"
                                             disabled={!input.trim() || loading}
@@ -638,7 +817,8 @@ export default function Dashboard() {
                             <div>
                                 <h4 className="text-sm font-bold text-gray-400 uppercase tracking-widest mb-4">Line Items</h4>
                                 <div className="border border-gray-100 rounded-xl overflow-hidden shadow-sm">
-                                    <table className="min-w-full divide-y divide-gray-200 text-sm">
+                                  <div className="overflow-x-auto">
+                                    <table className="min-w-[900px] w-full divide-y divide-gray-200 text-sm">
                                         <thead className="bg-gray-50">
                                             <tr>
                                                 <th className="px-4 py-3 text-left font-semibold text-gray-500">Item</th>
@@ -797,6 +977,7 @@ export default function Dashboard() {
                                             </tr>
                                         </tfoot>
                                     </table>
+                                  </div>
                                 </div>
                             </div>
                         </div>
@@ -825,6 +1006,42 @@ export default function Dashboard() {
                                     </button>
                                 )}
                             </div>
+                        </div>
+                    </div>
+                </div>
+            )}
+            {/* Upload Job ID Modal */}
+            {showUploadModal && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-gray-900/50 backdrop-blur-sm">
+                    <div className="bg-white rounded-2xl shadow-xl p-6 w-full max-w-sm">
+                        <h3 className="text-lg font-bold text-gray-900 mb-2">Upload Vendor Quote</h3>
+                        <p className="text-sm text-gray-500 mb-4">Which job is this quote for?</p>
+                        <input
+                            type="text"
+                            value={uploadJobId}
+                            onChange={(e) => setUploadJobId(e.target.value.toUpperCase())}
+                            placeholder="e.g., COST-00123456"
+                            className="w-full px-4 py-2 border border-gray-200 rounded-xl mb-4 focus:ring-2 focus:ring-brand-500/20 focus:border-brand-500 outline-none"
+                        />
+                        <div className="flex justify-end gap-2">
+                            <button
+                                onClick={() => { setShowUploadModal(false); setUploadFile(null); }}
+                                className="px-4 py-2 text-sm text-gray-600 hover:bg-gray-100 rounded-xl transition-all"
+                            >
+                                Cancel
+                            </button>
+                            <button
+                                onClick={() => {
+                                    setShowUploadModal(false);
+                                    if (uploadFile && uploadJobId) {
+                                        handleUploadQuote(uploadFile, uploadJobId);
+                                    }
+                                }}
+                                disabled={!uploadJobId}
+                                className="px-4 py-2 bg-brand-600 text-white text-sm font-bold rounded-xl hover:bg-brand-700 disabled:opacity-50 transition-all"
+                            >
+                                Upload
+                            </button>
                         </div>
                     </div>
                 </div>

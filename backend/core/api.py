@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Depends, HTTPException, status
+from fastapi import FastAPI, Depends, HTTPException, status, File, UploadFile, Form
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
@@ -9,14 +9,35 @@ from pydantic import BaseModel, ConfigDict
 from jose import JWTError, jwt
 import bcrypt
 import os
+import uuid
 import glob as glob_module
 from core import config
 from core.database import SessionLocal, User, Conversation, Message, CostingRequest, CostingLineItem, Product, EstimationLines, init_db
 from main import invoke_agent
 from utils import tools
 from utils.lifecycle_tracing import get_job_metrics, get_aggregate_metrics
+from contextlib import asynccontextmanager
 
-app = FastAPI()
+
+@asynccontextmanager
+async def lifespan(app):
+    # Startup: launch email monitor in background thread
+    try:
+        from services.email_monitor import start_email_monitor
+        start_email_monitor()
+        print("[api] Email monitor started")
+    except Exception as e:
+        print(f"[api] Email monitor failed to start: {e}")
+    yield
+    # Shutdown: stop email monitor
+    try:
+        from services.email_monitor import stop_email_monitor
+        stop_email_monitor()
+    except Exception:
+        pass
+
+
+app = FastAPI(lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -203,7 +224,7 @@ def chat(request: ChatRequest, current_user: User = Depends(get_current_user), d
         threshold=config.PRICE_THRESHOLD,
         conversation_history=conversation_history,
         session_state=request.state,
-        conversation_id=f"conv_{conversation.id}"  # Maintain consistent conversation trace
+        conversation_id=uuid.uuid5(uuid.NAMESPACE_URL, f"conv_{conversation.id}").hex  # Deterministic valid 32-char hex trace ID
     )
 
 
@@ -766,6 +787,144 @@ def get_job_timeline(job_id: str, current_user: User = Depends(get_current_user)
         "job_id": job_id,
         "status": request.status,
         "timeline": timeline
+    }
+
+
+# --- Quote PDF Upload ---
+@app.post("/chat/upload-quote")
+async def upload_quote_pdf(
+    file: UploadFile = File(...),
+    job_id: str = Form(...),
+    conversation_id: Optional[int] = Form(None),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Upload a vendor quote PDF, extract line items via OCR, and match to pending items."""
+    if not file.filename.lower().endswith('.pdf'):
+        raise HTTPException(status_code=400, detail="Only PDF files are accepted")
+
+    costing_req = db.query(CostingRequest).filter(CostingRequest.job_id == job_id).first()
+    if not costing_req:
+        raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+
+    upload_dir = os.path.join(config.TEMP_DOWNLOADS_DIR, "uploads")
+    os.makedirs(upload_dir, exist_ok=True)
+    temp_path = os.path.join(upload_dir, f"{job_id}_{uuid.uuid4().hex[:8]}_{file.filename}")
+
+    try:
+        content = await file.read()
+        with open(temp_path, "wb") as f:
+            f.write(content)
+
+        from services.pdf_extractor import extract_line_items_from_pdf
+        extracted_items = extract_line_items_from_pdf(temp_path)
+
+        if not extracted_items:
+            return {
+                "status": "no_items",
+                "message": "Could not extract any line items from the uploaded PDF.",
+                "extracted_count": 0,
+                "matches": [],
+                "job_id": job_id
+            }
+
+        from services.ocr_matcher import match_ocr_items_to_pending
+        matches = match_ocr_items_to_pending(job_id, extracted_items)
+
+        match_details = []
+        for match in matches:
+            ocr_item = match["ocr_item"]
+            detail = {
+                "line_item_id": match["matched_line_item_id"],
+                "pending_request_id": match.get("pending_request_id"),
+                "ocr_item_name": ocr_item.get("item_name"),
+                "ocr_unit_price": ocr_item.get("unit_price"),
+                "ocr_quantity": ocr_item.get("quantity"),
+                "confidence": match["confidence"],
+                "match_reason": match.get("match_reason", ""),
+            }
+            li = db.query(CostingLineItem).filter(CostingLineItem.id == detail["line_item_id"]).first()
+            if li:
+                detail["pending_item_name"] = li.item_name
+                detail["current_price"] = li.unit_price
+                detail["current_status"] = li.price_status
+            match_details.append(detail)
+
+        if conversation_id:
+            upload_msg = Message(
+                conversation_id=conversation_id,
+                content=f"[Uploaded vendor quote PDF: {file.filename}]",
+                sender="user"
+            )
+            db.add(upload_msg)
+            db.commit()
+
+        return {
+            "status": "matches_found" if match_details else "no_matches",
+            "message": f"Extracted {len(extracted_items)} items from PDF, matched {len(match_details)} to pending quotes.",
+            "extracted_count": len(extracted_items),
+            "matches": match_details,
+            "job_id": job_id
+        }
+    except Exception as e:
+        print(f"[UploadQuote] Error processing PDF: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to process PDF: {str(e)}")
+    finally:
+        try:
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+        except Exception:
+            pass
+
+
+class QuoteMatchItem(BaseModel):
+    line_item_id: int
+    price: float
+    apply: bool = True
+
+class QuoteMatchConfirmation(BaseModel):
+    job_id: str
+    matches: List[QuoteMatchItem]
+
+@app.post("/chat/confirm-quote-matches")
+def confirm_quote_matches(
+    confirmation: QuoteMatchConfirmation,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Apply confirmed quote matches from PDF extraction."""
+    costing_req = db.query(CostingRequest).filter(
+        CostingRequest.job_id == confirmation.job_id
+    ).first()
+    if not costing_req:
+        raise HTTPException(status_code=404, detail=f"Job {confirmation.job_id} not found")
+
+    applied = []
+    skipped = []
+
+    for match in confirmation.matches:
+        if not match.apply:
+            skipped.append(match.line_item_id)
+            continue
+        success = tools.mark_quote_received_by_id(
+            line_item_id=match.line_item_id,
+            price=match.price,
+            job_id=confirmation.job_id
+        )
+        if success:
+            applied.append(match.line_item_id)
+        else:
+            skipped.append(match.line_item_id)
+
+    quote_status = tools.check_all_quotes_received(confirmation.job_id)
+
+    return {
+        "status": "success",
+        "applied_count": len(applied),
+        "skipped_count": len(skipped),
+        "all_quotes_received": quote_status.get("all_received", False),
+        "pending_items": quote_status.get("pending_items", []),
+        "job_id": confirmation.job_id
     }
 
 

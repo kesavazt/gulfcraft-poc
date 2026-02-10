@@ -186,7 +186,10 @@ def status_node(state: AgentState):
             response = f"I couldn't find job **{job_id}**. Would you like to see all your jobs instead? Just ask 'show my job status' or 'list my jobs'."
         else:
             response = "You don't have any costing jobs yet. Would you like to create one? Just describe the work you need done and provide your boat model!"
-        return {"messages": [AIMessage(content=response)]}
+        return {
+            "messages": [AIMessage(content=response)],
+            "last_mentioned_job_id": job_id if job_id else None,
+        }
 
     # Build structured context
     status_context = _build_status_context(job_statuses, job_id, wants_details)
@@ -205,4 +208,7 @@ def status_node(state: AgentState):
         # Fallback to structured response if LLM fails
         response = f"Here's your job status:\n\n{status_context}"
 
-    return {"messages": [AIMessage(content=response)]}
+    return {
+        "messages": [AIMessage(content=response)],
+        "last_mentioned_job_id": job_id if job_id else None,
+    }

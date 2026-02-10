@@ -137,6 +137,14 @@ def pricing_advisor_node(state: AgentState):
             response_msg = "To compare prices, I need an item code. Please provide the item code."
         else:
             current_price = params.get("current_price")
+            # Sanitize price: strip currency symbols/text and convert to float
+            if current_price is not None:
+                try:
+                    import re
+                    cleaned = re.sub(r'[^\d.]', '', str(current_price))
+                    current_price = float(cleaned)
+                except (ValueError, TypeError):
+                    current_price = None
             if current_price is None:
                 response_msg = "Please specify the price you want to compare (e.g., 'Is 1500 AED reasonable?')"
             else:

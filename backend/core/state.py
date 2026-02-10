@@ -69,3 +69,4 @@ class AgentState(TypedDict, total=False):
     last_item_id: Optional[int]  # Last line item ID modified
     last_vendor_email: Optional[str]  # Last vendor mentioned
     conversation_context: Optional[Dict[str, Any]]  # Additional context for agent decisions
+    pending_disambiguation: Optional[Dict[str, Any]]  # Holds disambiguation state when multiple items match
