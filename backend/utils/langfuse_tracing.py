@@ -1,20 +1,29 @@
 """
-Langfuse Tracing Module (Updated for SDK 3.x)
+Langfuse Tracing Module (SDK v3.x)
 
-Provides hierarchical tracing for the Gulf Craft Costing Agent using Langfuse SDK 3.x API.
+Provides hierarchical tracing for the Gulf Craft Costing Agent:
+- Trace Level: Conversation (spans multiple messages)
+- Session Level: Costing Job (groups all operations for a single job)
+- Span Level: Individual operations (agent nodes, tool calls)
+
+Uses SDK v3.x OpenTelemetry-based API:
+- client.start_as_current_span() for automatic parent-child nesting
+- client.update_current_trace() for setting session_id/user_id on traces
 """
 
 import functools
 import traceback
-from contextlib import contextmanager
+import uuid
 from typing import Any, Dict, Optional, Callable
 
 # Import Langfuse SDK
 try:
     from langfuse import Langfuse
+    from langfuse.types import TraceContext
     LANGFUSE_AVAILABLE = True
 except ImportError:
     Langfuse = None
+    TraceContext = None
     LANGFUSE_AVAILABLE = False
 
 # Import config
@@ -48,52 +57,89 @@ def _get_langfuse_client() -> Optional[Langfuse]:
     return _langfuse_client
 
 
-@contextmanager
-def trace_context(trace_id: str, user_id: Optional[int] = None, metadata: Optional[Dict] = None):
-    """Context manager for conversation-level traces (SDK 3.x)."""
-    from langfuse.types import TraceContext
+def _ensure_hex_trace_id(trace_id: str) -> str:
+    """Ensure trace_id is a valid 32-char lowercase hex string for OpenTelemetry."""
+    clean = trace_id.lower().replace("-", "")
+    if len(clean) == 32:
+        try:
+            int(clean, 16)
+            return clean
+        except ValueError:
+            pass
+    # Convert non-hex IDs to a deterministic 32-char hex via uuid5
+    return uuid.uuid5(uuid.NAMESPACE_URL, trace_id).hex
 
-    client = _get_langfuse_client()
-    if not client:
-        yield None
-        return
 
-    observation = None
-    try:
-        trace_metadata = {
-            "session_type": "conversation",
-            "user_id": user_id,
-            **(metadata or {})
-        }
+class trace_context:
+    """
+    Context manager for conversation-level traces.
 
-        # Create trace context
-        trace_ctx = TraceContext(trace_id=trace_id, user_id=str(user_id) if user_id else None)
+    Creates a root span linked to a specific trace_id via TraceContext,
+    and sets user_id on the trace. Child spans created inside this
+    context automatically nest under it via OpenTelemetry propagation.
+    """
 
-        observation = client.start_observation(
-            trace_context=trace_ctx,
-            name="conversation",
-            as_type="span",
-            metadata=trace_metadata
-        )
+    def __init__(self, trace_id: str, user_id: Optional[int] = None, metadata: Optional[Dict] = None):
+        # TraceContext requires a valid 32-char lowercase hex string (OpenTelemetry trace ID)
+        self.trace_id = _ensure_hex_trace_id(trace_id)
+        self.user_id = user_id
+        self.metadata = metadata or {}
+        self._cm = None
+        self._span = None
 
-        yield observation
+    def __enter__(self):
+        client = _get_langfuse_client()
+        if not client:
+            return None
 
-    except Exception as e:
-        print(f"[Langfuse] Trace context error: {e}")
-        if observation:
+        try:
+            trace_metadata = {
+                "session_type": "conversation",
+                **self.metadata
+            }
+
+            # Create root span linked to this trace_id
+            trace_ctx = TraceContext(
+                trace_id=self.trace_id,
+                user_id=str(self.user_id) if self.user_id else None
+            )
+
+            self._cm = client.start_as_current_span(
+                name="conversation",
+                trace_context=trace_ctx,
+                metadata=trace_metadata
+            )
+            self._span = self._cm.__enter__()
+
+            # Set user_id on the trace
+            client.update_current_trace(
+                user_id=str(self.user_id) if self.user_id else None,
+                metadata=trace_metadata
+            )
+
+            return self._span
+
+        except Exception as e:
+            print(f"[Langfuse] Trace context error: {e}")
+            return None
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        client = _get_langfuse_client()
+
+        # End the span context manager
+        if self._cm:
             try:
-                observation.update(output={"error": str(e)})
-                observation.end()
-            except:
-                pass
-        yield None
-
-    finally:
-        if observation:
-            try:
-                observation.end()
+                if exc_type and self._span:
+                    self._span.update(
+                        output={"error": str(exc_val)},
+                        level="ERROR",
+                        status_message=str(exc_val)
+                    )
+                self._cm.__exit__(exc_type, exc_val, exc_tb)
             except Exception as e:
-                print(f"[Langfuse] Trace end error: {e}")
+                print(f"[Langfuse] Trace exit error: {e}")
+
+        # Flush to ensure traces are sent
         if client:
             try:
                 client.flush()
@@ -101,57 +147,80 @@ def trace_context(trace_id: str, user_id: Optional[int] = None, metadata: Option
                 print(f"[Langfuse] Flush error: {e}")
 
 
-@contextmanager
-def session_context(session_id: str, metadata: Optional[Dict] = None):
-    """Context manager for job-level sessions (SDK 3.x)."""
-    client = _get_langfuse_client()
-    if not client:
-        yield None
-        return
+class session_context:
+    """
+    Context manager for job-level sessions (nested under traces).
 
-    observation = None
-    try:
-        session_metadata = {
-            "session_type": "costing_job",
-            "job_id": session_id,
-            **(metadata or {})
-        }
+    Sets session_id on the parent trace so Langfuse groups traces
+    by job, and creates a child span for the job's operations.
+    """
 
-        observation = client.start_observation(
-            name=f"job_{session_id}",
-            as_type="span",
-            metadata=session_metadata
-        )
+    def __init__(self, session_id: str, metadata: Optional[Dict] = None):
+        self.session_id = session_id
+        self.metadata = metadata or {}
+        self._cm = None
+        self._span = None
 
-        yield observation
+    def __enter__(self):
+        client = _get_langfuse_client()
+        if not client:
+            return None
 
-    except Exception as e:
-        print(f"[Langfuse] Session context error: {e}")
-        if observation:
+        try:
+            # Set session_id on the trace so Langfuse groups it into a session
+            client.update_current_trace(session_id=self.session_id)
+
+            # Create a child span for this job's operations
+            self._cm = client.start_as_current_span(
+                name=f"job_{self.session_id}",
+                metadata={
+                    "session_type": "costing_job",
+                    "job_id": self.session_id,
+                    **self.metadata
+                }
+            )
+            self._span = self._cm.__enter__()
+
+            return self._span
+
+        except Exception as e:
+            print(f"[Langfuse] Session context error: {e}")
+            return None
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if self._cm:
             try:
-                observation.update(output={"error": str(e)})
-                observation.end()
-            except:
-                pass
-        yield None
-
-    finally:
-        if observation:
-            try:
-                observation.end()
+                if exc_type and self._span:
+                    self._span.update(
+                        output={"error": str(exc_val)},
+                        level="ERROR",
+                        status_message=str(exc_val)
+                    )
+                self._cm.__exit__(exc_type, exc_val, exc_tb)
             except Exception as e:
-                print(f"[Langfuse] Session end error: {e}")
+                print(f"[Langfuse] Session exit error: {e}")
 
 
 class span_context:
-    """Context manager for individual operation spans (SDK 3.x)."""
+    """
+    Context manager for individual operation spans.
 
-    def __init__(self, name: str, input_data: Optional[Any] = None, metadata: Optional[Dict] = None, span_type: str = "tool"):
+    Automatically nests under the current span via OpenTelemetry propagation.
+    """
+
+    def __init__(
+        self,
+        name: str,
+        input_data: Optional[Any] = None,
+        metadata: Optional[Dict] = None,
+        span_type: str = "tool"
+    ):
         self.name = name
         self.input_data = input_data
         self.metadata = metadata or {}
         self.span_type = span_type
-        self.observation = None
+        self._cm = None
+        self.span = None
 
     def __enter__(self):
         client = _get_langfuse_client()
@@ -159,12 +228,15 @@ class span_context:
             return self
 
         try:
-            self.observation = client.start_observation(
+            self._cm = client.start_as_current_span(
                 name=self.name,
-                as_type="span",
                 input=self.input_data,
-                metadata={"type": self.span_type, **self.metadata}
+                metadata={
+                    "type": self.span_type,
+                    **self.metadata
+                }
             )
+            self.span = self._cm.__enter__()
         except Exception as e:
             print(f"[Langfuse] Span context error ({self.name}): {e}")
 
@@ -172,27 +244,30 @@ class span_context:
 
     def update(self, output: Optional[Any] = None, metadata: Optional[Dict] = None):
         """Update span with output or additional metadata."""
-        if self.observation:
+        if self.span:
             try:
+                update_args = {}
                 if output is not None:
-                    self.observation.update(output=output)
+                    update_args["output"] = output
                 if metadata:
-                    updated_metadata = {**self.metadata, **metadata}
-                    self.observation.update(metadata=updated_metadata)
-                    self.metadata = updated_metadata
+                    update_args["metadata"] = {**self.metadata, **metadata}
+                if update_args:
+                    self.span.update(**update_args)
             except Exception as e:
                 print(f"[Langfuse] Span update error ({self.name}): {e}")
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        if self.observation:
+        if self._cm:
             try:
-                if exc_type:
-                    self.observation.update(output={"error": str(exc_val), "traceback": traceback.format_exc()})
-                    self.observation.end()
-                else:
-                    self.observation.end()
+                if exc_type and self.span:
+                    self.span.update(
+                        output={"error": str(exc_val), "traceback": traceback.format_exc()},
+                        level="ERROR",
+                        status_message=str(exc_val)
+                    )
+                self._cm.__exit__(exc_type, exc_val, exc_tb)
             except Exception as e:
-                print(f"[Langfuse] Span end error ({self.name}): {e}")
+                print(f"[Langfuse] Span exit error ({self.name}): {e}")
 
 
 def trace_agent(func: Callable) -> Callable:
@@ -247,28 +322,24 @@ def trace_tool(func: Callable) -> Callable:
 
 
 def trace_operation(name: str, input_payload: Any, output_payload: Any = None, error: Exception = None):
-    """Manual tracing function for operations (backward compatible with SDK 3.x)."""
+    """Manual tracing function for one-off operations."""
     client = _get_langfuse_client()
     if not client:
         return
 
     try:
-        event_data = {
-            "name": name,
-            "as_type": "span",
-            "input": input_payload,
-            "metadata": {"source": "manual_trace"}
-        }
-
-        if error:
-            event_data["output"] = {"error": str(error)}
-            event_data["status_message"] = str(error)
-            event_data["level"] = "ERROR"
-        elif output_payload is not None:
-            event_data["output"] = output_payload
-
-        observation = client.start_observation(**event_data)
-        observation.end()
-
+        with client.start_as_current_span(
+            name=name,
+            input=input_payload,
+            metadata={"source": "manual_trace"}
+        ) as span:
+            if error:
+                span.update(
+                    output={"error": str(error)},
+                    level="ERROR",
+                    status_message=str(error)
+                )
+            elif output_payload is not None:
+                span.update(output=output_payload)
     except Exception as e:
         print(f"[Langfuse] Manual trace error ({name}): {e}")

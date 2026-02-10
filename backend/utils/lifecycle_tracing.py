@@ -10,7 +10,7 @@ from typing import Any, Dict, List, Optional
 from enum import Enum
 import uuid
 
-from utils.langfuse_tracing import _get_langfuse_client, span_context, trace_operation
+from utils.langfuse_tracing import _get_langfuse_client
 
 
 class JobLifecycleEvent(str, Enum):
@@ -56,14 +56,23 @@ def log_lifecycle_event(
             **(metadata or {})
         }
 
-        # Create an observation for this lifecycle event
-        event_metadata["session_id"] = job_id  # Track job grouping in metadata
-        observation = client.start_observation(
-            name=event.value,
-            as_type="event",
-            metadata=event_metadata
+        # Create a span with session_id on the trace so Langfuse groups it under the job
+        from langfuse.types import TraceContext
+        trace_id = uuid.uuid5(uuid.NAMESPACE_URL, f"lifecycle_{job_id}_{event.value}_{datetime.utcnow().isoformat()}").hex
+        trace_ctx = TraceContext(
+            trace_id=trace_id,
+            user_id=str(user_id) if user_id else None
         )
-        observation.end()
+        with client.start_as_current_span(
+            name=event.value,
+            trace_context=trace_ctx,
+            metadata=event_metadata
+        ):
+            client.update_current_trace(
+                session_id=job_id,
+                user_id=str(user_id) if user_id else None,
+                metadata=event_metadata
+            )
         client.flush()
 
         print(f"[Lifecycle] {event.value} logged for {job_id}")
@@ -183,7 +192,7 @@ def log_job_approved(
 
             # Total time to approval (hours)
             total_hours = (approved_at - created_at).total_seconds() / 3600
-            client.score(
+            client.create_score(
                 name="time_to_approval_hours",
                 value=round(total_hours, 2),
                 trace_id=trace_id,
@@ -197,7 +206,7 @@ def log_job_approved(
                 if all_quotes_received_at.tzinfo is None:
                     all_quotes_received_at = all_quotes_received_at.replace(tzinfo=timezone.utc)
                 quote_wait_hours = (all_quotes_received_at - quotes_requested_at).total_seconds() / 3600
-                client.score(
+                client.create_score(
                     name="quote_wait_time_hours",
                     value=round(quote_wait_hours, 2),
                     trace_id=trace_id,
@@ -209,7 +218,7 @@ def log_job_approved(
                 if all_quotes_received_at.tzinfo is None:
                     all_quotes_received_at = all_quotes_received_at.replace(tzinfo=timezone.utc)
                 approval_delay_hours = (approved_at - all_quotes_received_at).total_seconds() / 3600
-                client.score(
+                client.create_score(
                     name="approval_delay_hours",
                     value=round(approval_delay_hours, 2),
                     trace_id=trace_id,
