@@ -49,7 +49,9 @@ def _resolve_prices(estimation_items: list, threshold: float):
             "estimation_quantity": item.get("quantity", 1),
             "estimation_average_price": item.get("average_price"),
             "estimation_last_purchase_price": item.get("last_purchase_price"),
-            "estimation_sales_price": item.get("sales_price")
+            "estimation_sales_price": item.get("sales_price"),
+            # Default margin from config
+            "margin": config.PROFIT_MARGIN
         }
 
         if is_labour:
@@ -101,13 +103,14 @@ def _update_sharepoint(job_id: str, description: str, costing_items: list, has_p
     """Create SharePoint list item for the costing job."""
     try:
         total_selling_price = 0
-        profit_margin = config.PROFIT_MARGIN
-        
+        default_margin = config.PROFIT_MARGIN
+
         for item in costing_items:
             unit_cost = item.get("unit_price")
             if unit_cost is not None:
                 quantity = item.get("quantity", 1)
-                total_selling_price += (unit_cost * quantity * profit_margin)
+                item_margin = item.get("margin") or default_margin
+                total_selling_price += (unit_cost * quantity * item_margin)
         
         sp_status = "Awaiting Quote" if has_pending else "Ready"
         sp_title = description[:250] if description else f"Costing for {job_id}"

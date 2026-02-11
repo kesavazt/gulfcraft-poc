@@ -4,12 +4,13 @@ import time
 import os
 import json
 import smtplib
+import logging
 from email.message import EmailMessage
 from datetime import datetime
 from typing import List, Dict, Any, Optional
 from core import config
 from utils import templates
-from services.search import hybrid_search
+from services.search import hybrid_search, hybrid_product_search
 from core.database import (
     SessionLocal, CostingRequest, Product, EstimationLines,
     CostingLineItem, PendingQuoteRequest
@@ -18,6 +19,8 @@ from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Font, Alignment, Border, Side, PatternFill
 from langchain.tools import tool
 import requests
+
+logger = logging.getLogger(__name__)
 
 # Optional Langfuse telemetry
 from utils.langfuse_tracing import trace_tool, trace_operation
@@ -458,13 +461,14 @@ def create_costing_sheet_with_items(
     ws = wb.active
     ws.title = "Costing Sheet"
 
-    # Get profit margin from config
-    profit_margin = config.PROFIT_MARGIN
+    # Default profit margin from config (used when item has no custom margin)
+    default_margin = config.PROFIT_MARGIN
 
     # Header styling
     header_font = Font(bold=True, color="FFFFFF")
     header_fill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
     profit_fill = PatternFill(start_color="70AD47", end_color="70AD47", fill_type="solid")  # Green for profit columns
+    margin_fill = PatternFill(start_color="ED7D31", end_color="ED7D31", fill_type="solid")  # Orange for margin column
     thin_border = Border(
         left=Side(style='thin'),
         right=Side(style='thin'),
@@ -481,28 +485,33 @@ def create_costing_sheet_with_items(
     ws['B3'] = description
     ws['A4'] = "Date:"
     ws['B4'] = datetime.now().strftime("%Y-%m-%d %H:%M")
-    ws['A5'] = "Profit Margin:"
-    ws['B5'] = f"{(profit_margin - 1) * 100:.0f}%" if profit_margin > 1 else f"{profit_margin * 100:.0f}%"
+    ws['A5'] = "Default Margin:"
+    ws['B5'] = f"{(default_margin - 1) * 100:.0f}%" if default_margin > 1 else f"{default_margin * 100:.0f}%"
 
-    # Column headers - added estimation tracking and price source columns
+    # Column headers (13 columns — Margin % inserted between Total Cost and Unit Sell)
     headers = [
         "Item Name", "Item Code",
-        "Est. Qty", "Est. Price",  # Estimation line data
-        "Qty", "Products Price",   # Current quantity and products table lookup
-        "Unit Cost", "Total Cost",  # Final cost being used
-        "Unit Sell", "Total Sell",  # Selling prices
-        "Price Source", "Status"    # Source and status tracking
+        "Est. Qty", "Est. Price",
+        "Qty", "Products Price",
+        "Unit Cost", "Total Cost",
+        "Margin %",
+        "Unit Sell", "Total Sell",
+        "Price Source", "Status"
     ]
     for col, header in enumerate(headers, start=1):
         cell = ws.cell(row=7, column=col, value=header)
         cell.font = header_font
-        # Use green fill for selling price columns
-        if col in [9, 10]:  # Unit Sell and Total Sell columns
+        if col == 9:  # Margin % column
+            cell.fill = margin_fill
+        elif col in [10, 11]:  # Unit Sell and Total Sell columns
             cell.fill = profit_fill
         else:
             cell.fill = header_fill
         cell.border = thin_border
         cell.alignment = Alignment(horizontal='center')
+
+    # Sort items: non-labour first, labour last
+    sorted_items = sorted(items, key=lambda x: (x.get("item_type", "").lower() == "hour", x.get("item_name", "")))
 
     # Add items
     total_cost = 0
@@ -510,7 +519,7 @@ def create_costing_sheet_with_items(
     pending_items = []
     row = 8
 
-    for item in items:
+    for item in sorted_items:
         # Column 1-2: Item Name and Code
         ws.cell(row=row, column=1, value=item.get("item_name", "")).border = thin_border
         ws.cell(row=row, column=2, value=item.get("item_code", "")).border = thin_border
@@ -530,16 +539,22 @@ def create_costing_sheet_with_items(
         price = item.get("unit_price")
         status = item.get("price_status", "resolved")
         price_source = item.get("price_source", "unknown")
+        item_margin = item.get("margin") or default_margin
+
+        # Column 9: Margin % (always shown)
+        margin_pct = (item_margin - 1) * 100 if item_margin > 1 else item_margin * 100
+        ws.cell(row=row, column=9, value=f"{margin_pct:.0f}%").border = thin_border
 
         if status == "pending_quote" or price is None:
-            # Column 7-10: Pending values
+            # Column 7-8: Pending values
             ws.cell(row=row, column=7, value="PENDING").border = thin_border
             ws.cell(row=row, column=8, value="PENDING").border = thin_border
-            ws.cell(row=row, column=9, value="PENDING").border = thin_border
+            # Column 10-11: Pending sell values
             ws.cell(row=row, column=10, value="PENDING").border = thin_border
-            # Column 11-12: Source and Status
-            ws.cell(row=row, column=11, value=price_source.capitalize()).border = thin_border
-            ws.cell(row=row, column=12, value="Awaiting Quote").border = thin_border
+            ws.cell(row=row, column=11, value="PENDING").border = thin_border
+            # Column 12-13: Source and Status
+            ws.cell(row=row, column=12, value=price_source.capitalize()).border = thin_border
+            ws.cell(row=row, column=13, value="Awaiting Quote").border = thin_border
             pending_items.append(item)
         else:
             # Column 7-8: Cost columns
@@ -547,15 +562,15 @@ def create_costing_sheet_with_items(
             item_total_cost = price * quantity
             ws.cell(row=row, column=8, value=round(item_total_cost, 2)).border = thin_border
 
-            # Column 9-10: Selling price columns (with profit margin applied)
-            unit_selling = price * profit_margin
-            item_total_selling = item_total_cost * profit_margin
-            ws.cell(row=row, column=9, value=round(unit_selling, 2)).border = thin_border
-            ws.cell(row=row, column=10, value=round(item_total_selling, 2)).border = thin_border
+            # Column 10-11: Selling price columns (with per-item margin)
+            unit_selling = price * item_margin
+            item_total_selling = item_total_cost * item_margin
+            ws.cell(row=row, column=10, value=round(unit_selling, 2)).border = thin_border
+            ws.cell(row=row, column=11, value=round(item_total_selling, 2)).border = thin_border
 
-            # Column 11-12: Source and Status
-            ws.cell(row=row, column=11, value=price_source.capitalize()).border = thin_border
-            ws.cell(row=row, column=12, value="Resolved").border = thin_border
+            # Column 12-13: Source and Status
+            ws.cell(row=row, column=12, value=price_source.capitalize()).border = thin_border
+            ws.cell(row=row, column=13, value="Resolved").border = thin_border
 
             total_cost += item_total_cost
             total_selling += item_total_selling
@@ -569,17 +584,17 @@ def create_costing_sheet_with_items(
     ws.cell(row=row, column=7, value="TOTAL:").font = total_font
     if pending_items:
         ws.cell(row=row, column=8, value=f"{round(total_cost, 2)} + PENDING").font = total_font
-        ws.cell(row=row, column=10, value=f"{round(total_selling, 2)} + PENDING").font = total_font
+        ws.cell(row=row, column=11, value=f"{round(total_selling, 2)} + PENDING").font = total_font
     else:
         ws.cell(row=row, column=8, value=round(total_cost, 2)).font = total_font
-        ws.cell(row=row, column=10, value=round(total_selling, 2)).font = total_font
+        ws.cell(row=row, column=11, value=round(total_selling, 2)).font = total_font
 
     # Add profit summary row
     row += 1
     ws.cell(row=row, column=7, value="PROFIT:").font = total_font
     if not pending_items:
         profit_amount = total_selling - total_cost
-        ws.cell(row=row, column=10, value=round(profit_amount, 2)).font = total_font
+        ws.cell(row=row, column=11, value=round(profit_amount, 2)).font = total_font
 
     # Adjust column widths
     ws.column_dimensions['A'].width = 30  # Item Name
@@ -590,10 +605,11 @@ def create_costing_sheet_with_items(
     ws.column_dimensions['F'].width = 14  # Products Price
     ws.column_dimensions['G'].width = 12  # Unit Cost
     ws.column_dimensions['H'].width = 12  # Total Cost
-    ws.column_dimensions['I'].width = 12  # Unit Sell
-    ws.column_dimensions['J'].width = 12  # Total Sell
-    ws.column_dimensions['K'].width = 14  # Price Source
-    ws.column_dimensions['L'].width = 15  # Status
+    ws.column_dimensions['I'].width = 10  # Margin %
+    ws.column_dimensions['J'].width = 12  # Unit Sell
+    ws.column_dimensions['K'].width = 12  # Total Sell
+    ws.column_dimensions['L'].width = 14  # Price Source
+    ws.column_dimensions['M'].width = 15  # Status
 
     # Save file
     filename = f"costing_{job_id}.xlsx"
@@ -601,7 +617,7 @@ def create_costing_sheet_with_items(
     os.makedirs(config.TEMP_DOWNLOADS_DIR, exist_ok=True)
     wb.save(output_path)
 
-    print(f"[CostingSheet] Generated: {output_path} (Profit Margin: {profit_margin}x)")
+    print(f"[CostingSheet] Generated: {output_path} (Default Margin: {default_margin}x)")
     return output_path
 
 
@@ -618,7 +634,7 @@ def regenerate_costing_sheet(job_id: str) -> Optional[str]:
         ).first()
 
         if not costing_req:
-            print(f"[CostingSheet] No costing request found for {job_id}")
+            logger.warning(f"[CostingSheet] No costing request found for {job_id}")
             return None
 
         line_items = session.query(CostingLineItem).filter(
@@ -643,17 +659,24 @@ def regenerate_costing_sheet(job_id: str) -> Optional[str]:
                 # Products table tracking
                 "products_table_price": getattr(li, "products_table_price", None),
                 # Price source
-                "price_source": getattr(li, "price_source", "unknown")
+                "price_source": getattr(li, "price_source", "unknown"),
+                # Per-item margin
+                "margin": getattr(li, "margin", None)
             })
 
-        return create_costing_sheet_with_items(
+        result = create_costing_sheet_with_items(
             job_id=job_id,
             items=items,
             quotation_id=costing_req.quotation_id or "",
             description=costing_req.item_details or ""
         )
+        if result:
+            logger.info(f"[CostingSheet] Regenerated successfully: {result}")
+        else:
+            logger.error(f"[CostingSheet] Regeneration returned no path for {job_id}")
+        return result
     except Exception as e:
-        print(f"[CostingSheet] Regenerate error for {job_id}: {e}")
+        logger.error(f"[CostingSheet] Regenerate error for {job_id}: {e}", exc_info=True)
         return None
     finally:
         session.close()
@@ -825,7 +848,9 @@ def save_costing_line_items(job_id: str, items: List[Dict[str, Any]]) -> bool:
                 # Products table tracking fields
                 products_table_price=item.get("products_table_price"),
                 # Price source tracking
-                price_source=item.get("price_source", "pending")
+                price_source=item.get("price_source", "pending"),
+                # Per-item margin
+                margin=item.get("margin")
             )
             session.add(line_item)
 
@@ -897,16 +922,28 @@ def get_costing_job_statuses(user_id: int, job_id: Optional[str] = None) -> List
                 "item_details": req.item_details,
                 "created_at": req.created_at.isoformat() if req.created_at else None,
                 "line_items": [{
+                    "id": li.id,
                     "item_name": li.item_name,
                     "item_code": li.item_code,
                     "quantity": li.quantity,
                     "unit_price": li.unit_price,
                     "price_status": li.price_status,
+                    "price_source": li.price_source,
+                    "item_type": li.item_type,
+                    "vendor_email": li.vendor_email,
+                    "estimation_quantity": li.estimation_quantity,
+                    "estimation_average_price": li.estimation_average_price,
+                    "estimation_last_purchase_price": li.estimation_last_purchase_price,
+                    "estimation_sales_price": li.estimation_sales_price,
+                    "products_table_price": li.products_table_price,
                     "quote_received_at": li.quote_received_at.isoformat() if li.quote_received_at else None
                 } for li in line_items],
                 "quote_requests": [{
                     "item_name": pr.item_name,
                     "status": pr.status,
+                    "vendor_email": pr.vendor_email,
+                    "email_subject": pr.email_subject,
+                    "received_price": pr.received_price,
                     "sent_at": pr.email_sent_at.isoformat() if pr.email_sent_at else None,
                     "received_at": pr.received_at.isoformat() if pr.received_at else None
                 } for pr in pending_reqs]
@@ -1176,7 +1213,8 @@ def add_line_item_to_job(
             unit_price=unit_price,
             price_status=price_status,
             vendor_email=vendor_email or config.VENDOR_DEFAULT_EMAIL,
-            price_source=price_source
+            price_source=price_source,
+            margin=config.PROFIT_MARGIN
         )
         session.add(line_item)
         session.commit()
@@ -1256,6 +1294,8 @@ def remove_line_item_from_job(job_id: str, item_identifier: str) -> Dict[str, An
 def search_products_for_agent(query: str, limit: int = 10) -> Dict[str, Any]:
     """
     Search for products across Products and EstimationLines tables.
+    Uses hybrid search (vector + full-text) for description-based queries,
+    and falls back to ILIKE for short code-like queries.
     Used by the edit job agent to find items when adding to a job.
     Returns:
         {"found": True/False, "results": [...], "message": "..."}
@@ -1263,13 +1303,34 @@ def search_products_for_agent(query: str, limit: int = 10) -> Dict[str, Any]:
     if not query or len(query) < 2:
         return {"found": False, "results": [], "message": "Search query too short (min 2 characters)"}
 
+    # Determine if this is a description-based query (use hybrid search)
+    # vs a code-based query (use ILIKE)
+    is_description_query = len(query) > 5 and " " in query
+
     session = SessionLocal()
     try:
-        search_pattern = f"%{query}%"
         results = []
         seen_items = set()
 
-        # Search Products table by item_number (code) — these have no item_name
+        # For description-based queries, use hybrid search first
+        if is_description_query:
+            hybrid_results = hybrid_product_search(query, top_k=limit)
+            for product in hybrid_results:
+                item_key = product["item_number"]
+                if item_key not in seen_items:
+                    results.append({
+                        "item_code": product["item_number"],
+                        "item_name": product["description"] or product["item_number"],
+                        "unit_cost": product["unit_cost"],
+                        "vendor_email": product.get("vendor_email") or config.VENDOR_DEFAULT_EMAIL,
+                        "source": "product",
+                        "has_name": bool(product["description"]),
+                        "score": product.get("score", 0),
+                    })
+                    seen_items.add(item_key)
+
+        # ILIKE search on Products by item_number (code)
+        search_pattern = f"%{query}%"
         products = session.query(Product).filter(
             Product.item_number.ilike(search_pattern)
         ).limit(20).all()
@@ -1279,13 +1340,32 @@ def search_products_for_agent(query: str, limit: int = 10) -> Dict[str, Any]:
             if item_key not in seen_items:
                 results.append({
                     "item_code": product.item_number,
-                    "item_name": product.item_number,  # Code used as name (no name field)
+                    "item_name": product.description or product.item_number,
                     "unit_cost": float(product.unit_cost) if product.unit_cost else None,
                     "vendor_email": config.VENDOR_DEFAULT_EMAIL,
                     "source": "product",
-                    "has_name": False,
+                    "has_name": bool(product.description),
                 })
                 seen_items.add(item_key)
+
+        # ILIKE search on Products by description
+        if not is_description_query:
+            products_by_desc = session.query(Product).filter(
+                Product.description.ilike(search_pattern)
+            ).limit(20).all()
+
+            for product in products_by_desc:
+                item_key = product.item_number
+                if item_key not in seen_items:
+                    results.append({
+                        "item_code": product.item_number,
+                        "item_name": product.description or product.item_number,
+                        "unit_cost": float(product.unit_cost) if product.unit_cost else None,
+                        "vendor_email": config.VENDOR_DEFAULT_EMAIL,
+                        "source": "product",
+                        "has_name": bool(product.description),
+                    })
+                    seen_items.add(item_key)
 
         # Search EstimationLines by item_name (description)
         estimation_items = session.query(EstimationLines).filter(
@@ -1340,26 +1420,27 @@ def search_products_for_agent(query: str, limit: int = 10) -> Dict[str, Any]:
                     })
                     seen_items.add(item_key)
 
-        # Sort by relevance
-        q_lower = query.lower()
-        def sort_key(item):
-            name_lower = item["item_name"].lower()
-            code_lower = (item["item_code"] or "").lower()
-            if name_lower == q_lower or code_lower == q_lower:
-                return 0
-            elif name_lower.startswith(q_lower) or code_lower.startswith(q_lower):
-                return 1
-            else:
-                return 2
+        # Sort: hybrid results already ranked by score, ILIKE by relevance
+        if not is_description_query:
+            q_lower = query.lower()
+            def sort_key(item):
+                name_lower = item["item_name"].lower()
+                code_lower = (item["item_code"] or "").lower()
+                if name_lower == q_lower or code_lower == q_lower:
+                    return 0
+                elif name_lower.startswith(q_lower) or code_lower.startswith(q_lower):
+                    return 1
+                else:
+                    return 2
+            results.sort(key=sort_key)
 
-        results.sort(key=sort_key)
         results = results[:limit]
 
         if not results:
             return {
                 "found": False,
                 "results": [],
-                "message": f"No products found matching '{query}'. Note: many products only have item codes (e.g., ABC-123) without descriptive names. Try searching by item code instead."
+                "message": f"No products found matching '{query}'. Try searching by item code or a different description."
             }
 
         return {
@@ -1372,6 +1453,48 @@ def search_products_for_agent(query: str, limit: int = 10) -> Dict[str, Any]:
         return {"found": False, "results": [], "message": f"Search error: {str(e)}"}
     finally:
         session.close()
+
+
+@trace_tool
+def search_products_by_description(query: str, limit: int = 10) -> Dict[str, Any]:
+    """
+    Search products by description using hybrid search (semantic + full-text).
+    Used by pricing advisor and other agents for description-based product lookup.
+    Returns:
+        {"found": True/False, "results": [...], "message": "..."}
+    """
+    if not query or len(query) < 2:
+        return {"found": False, "results": [], "message": "Search query too short"}
+
+    try:
+        hybrid_results = hybrid_product_search(query, top_k=limit)
+
+        if not hybrid_results:
+            return {
+                "found": False,
+                "results": [],
+                "message": f"No products found matching '{query}'"
+            }
+
+        results = []
+        for product in hybrid_results:
+            results.append({
+                "item_code": product["item_number"],
+                "item_name": product["description"] or product["item_number"],
+                "unit_cost": product["unit_cost"],
+                "vendor_email": product.get("vendor_email") or config.VENDOR_DEFAULT_EMAIL,
+                "source": "product",
+                "score": product.get("score", 0),
+            })
+
+        return {
+            "found": True,
+            "results": results,
+            "message": f"Found {len(results)} product(s) matching '{query}'"
+        }
+    except Exception as e:
+        print(f"[SearchProductsByDescription] Error: {e}")
+        return {"found": False, "results": [], "message": f"Search error: {str(e)}"}
 
 
 def find_matching_line_items(job_id: str, item_identifier: str) -> Dict[str, Any]:
@@ -1863,16 +1986,25 @@ def cancel_quote_request(job_id: str, item_name: str) -> Dict[str, Any]:
 # --- Pricing Intelligence Tools ---
 
 @trace_tool
-def get_item_price_history(item_code: str, limit: int = 10) -> List[Dict[str, Any]]:
+def get_item_price_history(item_code: str, item_name: str = None, limit: int = 10) -> List[Dict[str, Any]]:
     """
     Retrieves price history for an item from past costing jobs.
+    Searches by item_code first, falls back to item_name ILIKE if no results.
     """
     session = SessionLocal()
     try:
+        # Search by item_code first
         line_items = session.query(CostingLineItem).filter(
             CostingLineItem.item_code == item_code,
             CostingLineItem.unit_price.isnot(None)
         ).order_by(CostingLineItem.quote_received_at.desc()).limit(limit).all()
+
+        # Fallback: search by item_name if no results by code
+        if not line_items and item_name:
+            line_items = session.query(CostingLineItem).filter(
+                CostingLineItem.item_name.ilike(f"%{item_name}%"),
+                CostingLineItem.unit_price.isnot(None)
+            ).order_by(CostingLineItem.quote_received_at.desc()).limit(limit).all()
 
         history = []
         for item in line_items:
@@ -1883,6 +2015,7 @@ def get_item_price_history(item_code: str, limit: int = 10) -> List[Dict[str, An
             history.append({
                 "job_id": costing_req.job_id if costing_req else "Unknown",
                 "item_name": item.item_name,
+                "item_code": item.item_code,
                 "unit_price": item.unit_price,
                 "quantity": item.quantity,
                 "vendor_email": item.vendor_email,
@@ -1898,9 +2031,37 @@ def get_item_price_history(item_code: str, limit: int = 10) -> List[Dict[str, An
 
 
 @trace_tool
-def get_average_item_price(item_code: str) -> Dict[str, Any]:
+def get_current_product_price(item_code: str) -> Dict[str, Any]:
+    """
+    Gets the current price from the Products table for an item.
+    """
+    session = SessionLocal()
+    try:
+        product = session.query(Product).filter(
+            Product.item_number == item_code
+        ).first()
+
+        if product:
+            return {
+                "found": True,
+                "item_code": product.item_number,
+                "description": product.description,
+                "unit_cost": float(product.unit_cost) if product.unit_cost else None,
+                "vendor_email": product.vendor_email,
+            }
+        return {"found": False}
+    except Exception as e:
+        print(f"[CurrentProductPrice] Error: {e}")
+        return {"found": False}
+    finally:
+        session.close()
+
+
+@trace_tool
+def get_average_item_price(item_code: str, item_name: str = None) -> Dict[str, Any]:
     """
     Calculates average price for an item from historical data.
+    Searches by item_code first, falls back to item_name ILIKE if no results.
     """
     session = SessionLocal()
     try:
@@ -1915,6 +2076,18 @@ def get_average_item_price(item_code: str) -> Dict[str, Any]:
             CostingLineItem.item_code == item_code,
             CostingLineItem.unit_price.isnot(None)
         ).first()
+
+        # Fallback: search by item_name if no results by code
+        if (not result or result.count == 0) and item_name:
+            result = session.query(
+                func.avg(CostingLineItem.unit_price).label('avg_price'),
+                func.min(CostingLineItem.unit_price).label('min_price'),
+                func.max(CostingLineItem.unit_price).label('max_price'),
+                func.count(CostingLineItem.id).label('count')
+            ).filter(
+                CostingLineItem.item_name.ilike(f"%{item_name}%"),
+                CostingLineItem.unit_price.isnot(None)
+            ).first()
 
         if result and result.count > 0:
             return {

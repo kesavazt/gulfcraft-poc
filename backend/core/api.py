@@ -135,6 +135,8 @@ class LineItemSchema(BaseModel):
     products_table_price: Optional[float] = None
     # Price source
     price_source: Optional[str] = None
+    # Per-item margin (multiplier)
+    margin: Optional[float] = None
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -152,6 +154,7 @@ class LineItemUpdate(BaseModel):
     quantity: Optional[int] = None
     unit_price: Optional[float] = None
     item_type: Optional[str] = None
+    margin: Optional[float] = None
 
 class LineItemCreate(BaseModel):
     item_name: str
@@ -160,6 +163,7 @@ class LineItemCreate(BaseModel):
     unit_price: Optional[float] = None
     item_type: Optional[str] = "Item"
     vendor_email: Optional[str] = None
+    margin: Optional[float] = None
 
 class RequestStatus(BaseModel):
     id: int
@@ -402,8 +406,10 @@ def add_line_item(job_id: str, item: LineItemCreate, current_user: User = Depend
         quantity=item.quantity,
         unit_price=item.unit_price,
         price_status="resolved" if item.unit_price is not None else "pending",
+        price_source="manual",
         item_type=item.item_type,
-        vendor_email=item.vendor_email
+        vendor_email=item.vendor_email,
+        margin=item.margin if item.margin is not None else config.PROFIT_MARGIN
     )
     db.add(new_item)
     db.commit()
@@ -474,6 +480,8 @@ def update_line_item(job_id: str, item_id: int, item_update: LineItemUpdate, cur
         line_item.quantity = item_update.quantity
     if item_update.item_type is not None:
         line_item.item_type = item_update.item_type
+    if item_update.margin is not None:
+        line_item.margin = item_update.margin
 
     db.commit()
     db.refresh(line_item)
@@ -930,13 +938,17 @@ def confirm_quote_matches(
 
     quote_status = tools.check_all_quotes_received(confirmation.job_id)
 
+    # Build download URL for the regenerated sheet
+    download_url = f"/costing-sheets/by-job/{confirmation.job_id}"
+
     return {
         "status": "success",
         "applied_count": len(applied),
         "skipped_count": len(skipped),
         "all_quotes_received": quote_status.get("all_received", False),
         "pending_items": quote_status.get("pending_items", []),
-        "job_id": confirmation.job_id
+        "job_id": confirmation.job_id,
+        "download_url": download_url
     }
 
 

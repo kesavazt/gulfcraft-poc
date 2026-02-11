@@ -181,7 +181,9 @@ def invoke_agent(message: str, user_id: int = 1, threshold: float = 1000.0, conv
             inputs["last_mentioned_job_id"] = session_state["job_id"]
         if session_state.get("pending_disambiguation"):
             inputs["pending_disambiguation"] = session_state["pending_disambiguation"]
-
+        # Preserve generated_file path across turns so download URL is available
+        if session_state.get("generated_file"):
+            inputs["generated_file"] = session_state["generated_file"]
 
     response_messages = []
     final_state = {}
@@ -196,6 +198,11 @@ def invoke_agent(message: str, user_id: int = 1, threshold: float = 1000.0, conv
                         if isinstance(msg, AIMessage) and msg.content:
                             response_messages.append(msg.content)
 
+    # Preserve generated_file: use current turn's value, or fall back to session state
+    generated_file = final_state.get("generated_file")
+    if not generated_file and session_state:
+        generated_file = session_state.get("generated_file")
+
     return {
         "response": "\n".join(response_messages),
         "state": {
@@ -203,7 +210,7 @@ def invoke_agent(message: str, user_id: int = 1, threshold: float = 1000.0, conv
             "job_id": final_state.get("job_id"),
             "emails_sent": final_state.get("emails_sent", False),
             "awaiting_quotes": final_state.get("awaiting_quotes", False),
-            "generated_file": final_state.get("generated_file"),
+            "generated_file": generated_file,
             "sharepoint_url": final_state.get("sharepoint_url"),
             "last_search_description": final_state.get("last_search_description"),
             "last_search_boat_model": final_state.get("last_search_boat_model"),

@@ -2,9 +2,11 @@
 Pricing Advisor Agent Node
 
 Provides historical pricing intelligence and price comparison capabilities.
+Supports searching products by description using hybrid search.
 """
 
 import json
+import re
 from langchain_core.messages import AIMessage
 from langchain_core.prompts import ChatPromptTemplate
 from core.state import AgentState
@@ -37,12 +39,112 @@ def _extract_pricing_parameters(user_message: str, state: AgentState) -> dict:
         return {}
 
 
+def _truncate(text: str, max_len: int = 80) -> str:
+    return text[:max_len] + "..." if len(text) > max_len else text
+
+
+def _format_cost(value) -> str:
+    if value is not None:
+        return f"{value:,.2f} AED"
+    return "N/A"
+
+
+def _sanitize_price(value) -> float | None:
+    if value is None:
+        return None
+    try:
+        cleaned = re.sub(r'[^\d.]', '', str(value))
+        return float(cleaned) if cleaned else None
+    except (ValueError, TypeError):
+        return None
+
+
+def _build_history_table(history: list) -> str:
+    """Format price history as a markdown table."""
+    rows = history[:10]
+    table = f"**Price History** ({len(history)} records):\n\n"
+    table += "| # | Item Name | Item Code | Unit Price | Qty | Job | Vendor | Date |\n"
+    table += "|---|-----------|-----------|------------|-----|-----|--------|------|\n"
+    for i, r in enumerate(rows, 1):
+        name = (r.get('item_name') or 'Unknown')[:40]
+        code = r.get('item_code') or '-'
+        price = f"{r['unit_price']:,.2f} AED" if r.get('unit_price') is not None else 'N/A'
+        qty = r.get('quantity') or '-'
+        job = r.get('job_id') or '-'
+        vendor = (r.get('vendor_email') or '-').split('@')[0]
+        date = (r.get('date') or '-')[:10]
+        table += f"| {i} | {name} | {code} | {price} | {qty} | {job} | {vendor} | {date} |\n"
+    return table
+
+
+def _search_products_for_name(item_name: str) -> list:
+    """Search products by description and return results."""
+    search_result = tools.search_products_by_description(item_name, limit=10)
+    if search_result.get("found"):
+        return search_result["results"]
+    return []
+
+
 @trace_agent
 def pricing_advisor_node(state: AgentState):
     """
     Provides pricing intelligence and historical data.
+    Supports product search by description for price lookups.
     """
     user_message = state["messages"][-1].content if state.get("messages") else ""
+
+    # Handle disambiguation response (user selecting from search results)
+    pending = state.get("pending_disambiguation")
+    if pending and pending.get("agent") == "pricing_advisor":
+        selection = user_message.strip()
+        items = pending.get("items", [])
+        selected_item = None
+
+        if selection.isdigit():
+            idx = int(selection) - 1
+            if 0 <= idx < len(items):
+                selected_item = items[idx]
+
+        if not selected_item:
+            return {
+                "messages": [AIMessage(content=f"Please select a valid number (1-{len(items)}) from the list above.")],
+                "pending_disambiguation": pending,
+            }
+
+        # Show pricing info for the selected product
+        item_code = selected_item.get("item_code", "")
+        item_name = selected_item.get("item_name", "")
+        unit_cost = selected_item.get("unit_cost")
+
+        # Get current price from Products table
+        current_product = tools.get_current_product_price(item_code) if item_code else {"found": False}
+        current_price = _format_cost(current_product.get("unit_cost")) if current_product.get("found") else _format_cost(unit_cost)
+
+        response_msg = f"📊 **Product Pricing: {_truncate(item_name)}**\n\n"
+        response_msg += f"- **Item Code:** {item_code or 'N/A'}\n"
+        response_msg += f"- **Current Price (Products Table):** {current_price}\n\n"
+
+        # Try to get historical pricing
+        history = tools.get_item_price_history(item_code, item_name=item_name, limit=10)
+        avg_data = tools.get_average_item_price(item_code, item_name=item_name)
+
+        if history:
+            response_msg += _build_history_table(history)
+
+        if avg_data and not avg_data.get("error"):
+            response_msg += (
+                f"\n**Statistics** (from {avg_data.get('sample_count')} purchases):\n"
+                f"- Average: {_format_cost(avg_data.get('average_price'))}\n"
+                f"- Range: {_format_cost(avg_data.get('min_price'))} - {_format_cost(avg_data.get('max_price'))}\n"
+            )
+        elif not history:
+            response_msg += "No historical pricing data found for this item.\n"
+
+        return {
+            "messages": [AIMessage(content=response_msg)],
+            "pending_disambiguation": None,
+            "last_action": "product_search",
+        }
 
     # Extract parameters
     params = _extract_pricing_parameters(user_message, state)
@@ -53,107 +155,224 @@ def pricing_advisor_node(state: AgentState):
                 "I can provide pricing intelligence! I can help you:\n\n"
                 "📊 **View price history** - See past prices for specific items\n"
                 "📈 **Calculate averages** - Get average, min, and max prices\n"
-                "🔍 **Compare prices** - Check if current quotes are reasonable\n\n"
+                "🔍 **Compare prices** - Check if current quotes are reasonable\n"
+                "🔎 **Search products** - Find products by description and see their pricing\n\n"
                 "Examples:\n"
                 "- 'What did we pay for hydraulic pumps in the past?'\n"
                 "- 'What's the average price for item code XYZ-123?'\n"
-                "- 'Is 1500 AED a good price for this anchor winch?'"
+                "- 'Is 1500 AED a good price for this anchor winch?'\n"
+                "- 'Search for marine engine pricing'\n"
+                "- 'How much does a bilge pump cost?'"
             )]
         }
 
     query_type = params.get("query_type")
     item_code = params.get("item_code")
     item_name = params.get("item_name")
+    search_query = params.get("search_query")
 
     response_msg = ""
 
-    if query_type == "price_history":
+    if query_type == "product_search":
+        query_text = search_query or item_name or ""
+        if not query_text:
+            response_msg = "Please describe the product you want to search for."
+        else:
+            search_result = tools.search_products_by_description(query_text, limit=10)
+
+            if search_result.get("found"):
+                results = search_result["results"]
+                options = "\n".join([
+                    f"  {i+1}. **{_truncate(p['item_name'])}** "
+                    f"(Code: {p.get('item_code') or 'N/A'}, "
+                    f"Unit Cost: {_format_cost(p.get('unit_cost'))})"
+                    for i, p in enumerate(results[:10])
+                ])
+
+                response_msg = (
+                    f"🔎 Found **{len(results)} products** matching '**{query_text}**':\n\n"
+                    f"{options}\n\n"
+                    f"Select a product number to see detailed pricing, or ask about a specific item code."
+                )
+
+                return {
+                    "messages": [AIMessage(content=response_msg)],
+                    "pending_disambiguation": {
+                        "agent": "pricing_advisor",
+                        "items": results[:10],
+                    },
+                    "last_action": "product_search",
+                }
+            else:
+                response_msg = f"No products found matching '**{query_text}**'. Try a different description."
+
+    elif query_type == "price_history":
         if not item_code and not item_name:
             response_msg = "Please specify an item code or item name to look up price history."
         else:
-            # If only name provided, try to find item code from recent jobs
-            if not item_code:
-                response_msg = f"To show price history, I need an item code. Could you provide the item code for '{item_name}'?"
-            else:
-                history = tools.get_item_price_history(item_code, limit=10)
+            # If only name provided, search for matching products
+            if not item_code and item_name:
+                products = _search_products_for_name(item_name)
+                if products:
+                    if len(products) == 1:
+                        item_code = products[0].get("item_code")
+                    else:
+                        options = "\n".join([
+                            f"  {i+1}. **{_truncate(p['item_name'])}** "
+                            f"(Code: {p.get('item_code') or 'N/A'}, "
+                            f"Unit Cost: {_format_cost(p.get('unit_cost'))})"
+                            for i, p in enumerate(products[:10])
+                        ])
+                        response_msg = (
+                            f"I found multiple products matching '**{item_name}**':\n\n"
+                            f"{options}\n\n"
+                            f"Select a product number to see its price history."
+                        )
+                        return {
+                            "messages": [AIMessage(content=response_msg)],
+                            "pending_disambiguation": {
+                                "agent": "pricing_advisor",
+                                "items": products[:10],
+                            },
+                            "last_action": "price_history",
+                        }
+                else:
+                    response_msg = f"No products found matching '{item_name}'. Please provide an item code directly."
+
+            if item_code and not response_msg:
+                history = tools.get_item_price_history(item_code, item_name=item_name, limit=10)
+                current_product = tools.get_current_product_price(item_code)
+
+                response_msg = f"📊 **Price History for {item_code}**\n\n"
+
+                # Show current price from Products table
+                if current_product.get("found"):
+                    desc = current_product.get("description") or ""
+                    response_msg += f"**Current Price (Products Table):** {_format_cost(current_product.get('unit_cost'))}"
+                    if desc:
+                        response_msg += f" — {_truncate(desc)}"
+                    response_msg += "\n\n"
 
                 if not history:
-                    response_msg = (
-                        f"📊 **Price History for {item_code}**\n\n"
-                        f"No historical pricing data found for this item. "
-                        f"This might be a new item or it hasn't been quoted before."
+                    response_msg += (
+                        "No historical pricing data found for this item. "
+                        "This might be a new item or it hasn't been quoted before."
                     )
                 else:
-                    response_msg = f"📊 **Price History for {item_code}**\n\n"
-                    response_msg += f"Found {len(history)} previous purchases:\n\n"
+                    response_msg += _build_history_table(history)
 
-                    for i, record in enumerate(history[:5], 1):
-                        response_msg += (
-                            f"{i}. **{record.get('unit_price', 'N/A')} AED** - "
-                            f"{record.get('item_name', 'Unknown item')}\n"
-                            f"   Job: {record.get('job_id')} | "
-                            f"Qty: {record.get('quantity', 'N/A')} | "
-                            f"Vendor: {record.get('vendor_email', 'Unknown')}\n"
-                            f"   Date: {record.get('date', 'Unknown')}\n\n"
-                        )
-
-                    if len(history) > 5:
-                        response_msg += f"... and {len(history) - 5} more records.\n\n"
-
-                    # Calculate quick stats
+                    # Quick stats
                     prices = [r.get('unit_price') for r in history if r.get('unit_price')]
                     if prices:
                         avg_price = sum(prices) / len(prices)
                         response_msg += (
-                            f"**Quick Stats:**\n"
-                            f"- Average: {avg_price:.2f} AED\n"
-                            f"- Range: {min(prices):.2f} - {max(prices):.2f} AED"
+                            f"\n**Quick Stats:**\n"
+                            f"- Average: {avg_price:,.2f} AED\n"
+                            f"- Range: {min(prices):,.2f} - {max(prices):,.2f} AED"
                         )
 
     elif query_type == "average_price":
+        if not item_code and item_name:
+            # Try to resolve name to code via search
+            products = _search_products_for_name(item_name)
+            if products:
+                if len(products) == 1:
+                    item_code = products[0].get("item_code")
+                else:
+                    options = "\n".join([
+                        f"  {i+1}. **{_truncate(p['item_name'])}** "
+                        f"(Code: {p.get('item_code') or 'N/A'}, "
+                        f"Unit Cost: {_format_cost(p.get('unit_cost'))})"
+                        for i, p in enumerate(products[:10])
+                    ])
+                    response_msg = (
+                        f"I found multiple products matching '**{item_name}**':\n\n"
+                        f"{options}\n\n"
+                        f"Select a product number to see its average pricing."
+                    )
+                    return {
+                        "messages": [AIMessage(content=response_msg)],
+                        "pending_disambiguation": {
+                            "agent": "pricing_advisor",
+                            "items": products[:10],
+                        },
+                        "last_action": "average_price",
+                    }
+
         if not item_code:
-            response_msg = "To calculate average price, I need an item code. Please provide the item code."
+            response_msg = "To calculate average price, I need an item code or product description. Please provide one."
         else:
-            avg_data = tools.get_average_item_price(item_code)
+            avg_data = tools.get_average_item_price(item_code, item_name=item_name)
+            current_product = tools.get_current_product_price(item_code)
+
+            response_msg = f"📈 **Pricing Statistics for {item_code}**\n\n"
+
+            # Show current price from Products table
+            if current_product.get("found"):
+                desc = current_product.get("description") or ""
+                response_msg += f"**Current Price (Products Table):** {_format_cost(current_product.get('unit_cost'))}"
+                if desc:
+                    response_msg += f" — {_truncate(desc)}"
+                response_msg += "\n\n"
 
             if avg_data.get("error"):
-                response_msg = (
-                    f"📈 **Pricing Statistics for {item_code}**\n\n"
+                response_msg += (
                     f"❌ {avg_data.get('error')}\n\n"
                     f"This item hasn't been purchased before or doesn't exist in our records."
                 )
             else:
-                response_msg = (
-                    f"📈 **Pricing Statistics for {item_code}**\n\n"
+                response_msg += (
                     f"Based on **{avg_data.get('sample_count')} historical purchases**:\n\n"
-                    f"- **Average Price:** {avg_data.get('average_price', 'N/A')} AED\n"
-                    f"- **Lowest Price:** {avg_data.get('min_price', 'N/A')} AED\n"
-                    f"- **Highest Price:** {avg_data.get('max_price', 'N/A')} AED\n\n"
+                    f"- **Average Price:** {_format_cost(avg_data.get('average_price'))}\n"
+                    f"- **Lowest Price:** {_format_cost(avg_data.get('min_price'))}\n"
+                    f"- **Highest Price:** {_format_cost(avg_data.get('max_price'))}\n\n"
                     f"💡 Use these stats to evaluate vendor quotes!"
                 )
 
     elif query_type == "price_comparison":
+        if not item_code and item_name:
+            # Try to resolve name to code via search
+            products = _search_products_for_name(item_name)
+            if products:
+                if len(products) == 1:
+                    item_code = products[0].get("item_code")
+                else:
+                    options = "\n".join([
+                        f"  {i+1}. **{_truncate(p['item_name'])}** "
+                        f"(Code: {p.get('item_code') or 'N/A'}, "
+                        f"Unit Cost: {_format_cost(p.get('unit_cost'))})"
+                        for i, p in enumerate(products[:10])
+                    ])
+                    response_msg = (
+                        f"I found multiple products matching '**{item_name}**':\n\n"
+                        f"{options}\n\n"
+                        f"Select a product number to compare pricing."
+                    )
+                    return {
+                        "messages": [AIMessage(content=response_msg)],
+                        "pending_disambiguation": {
+                            "agent": "pricing_advisor",
+                            "items": products[:10],
+                        },
+                        "last_action": "price_comparison",
+                    }
+
         if not item_code:
-            response_msg = "To compare prices, I need an item code. Please provide the item code."
+            response_msg = "To compare prices, I need an item code or product description. Please provide one."
         else:
-            current_price = params.get("current_price")
-            # Sanitize price: strip currency symbols/text and convert to float
-            if current_price is not None:
-                try:
-                    import re
-                    cleaned = re.sub(r'[^\d.]', '', str(current_price))
-                    current_price = float(cleaned)
-                except (ValueError, TypeError):
-                    current_price = None
+            current_price = _sanitize_price(params.get("current_price"))
             if current_price is None:
                 response_msg = "Please specify the price you want to compare (e.g., 'Is 1500 AED reasonable?')"
             else:
-                avg_data = tools.get_average_item_price(item_code)
+                avg_data = tools.get_average_item_price(item_code, item_name=item_name)
+                current_product = tools.get_current_product_price(item_code)
 
                 if avg_data.get("error"):
-                    response_msg = (
-                        f"🔍 **Price Comparison for {item_code}**\n\n"
-                        f"Current quote: **{current_price} AED**\n\n"
+                    response_msg = f"🔍 **Price Comparison for {item_code}**\n\n"
+                    if current_product.get("found"):
+                        response_msg += f"**Current Price (Products Table):** {_format_cost(current_product.get('unit_cost'))}\n"
+                    response_msg += (
+                        f"Current quote: **{current_price:,.2f} AED**\n\n"
                         f"⚠️ No historical data available for comparison. "
                         f"This might be a new item or first-time purchase."
                     )
@@ -192,7 +411,7 @@ def pricing_advisor_node(state: AgentState):
     else:
         response_msg = (
             f"I don't understand the query type '{query_type}'. "
-            f"I can help with: price_history, average_price, or price_comparison."
+            f"I can help with: price_history, average_price, price_comparison, or product_search."
         )
 
     return {

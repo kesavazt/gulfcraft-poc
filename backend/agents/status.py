@@ -2,9 +2,11 @@
 Status Agent Node
 
 Provides conversational job status summaries and pending/available product lists.
+Supports follow-up queries: awaiting quotes, wait duration, vendor info.
 """
 
 import re
+from datetime import datetime, timezone
 from langchain_core.messages import AIMessage
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from core.state import AgentState
@@ -43,7 +45,218 @@ def _truncate(text: str, max_len: int = 60) -> str:
     return f"{text[:max_len - 3]}..."
 
 
-def _build_status_context(job_statuses: list, specific_job_id: str = None, wants_details: bool = False) -> str:
+def _format_price(value) -> str:
+    """Format a price value for display."""
+    if value is None:
+        return "-"
+    return f"{value:,.2f}"
+
+
+def _time_ago(iso_str: str) -> str:
+    """Convert ISO datetime string to a human-readable 'time ago' string."""
+    if not iso_str:
+        return "unknown"
+    try:
+        dt = datetime.fromisoformat(iso_str)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        now = datetime.now(timezone.utc)
+        delta = now - dt
+        days = delta.days
+        hours = delta.seconds // 3600
+
+        if days > 0:
+            return f"{days} day{'s' if days != 1 else ''} ago"
+        elif hours > 0:
+            return f"{hours} hour{'s' if hours != 1 else ''} ago"
+        else:
+            minutes = delta.seconds // 60
+            return f"{minutes} minute{'s' if minutes != 1 else ''} ago"
+    except (ValueError, TypeError):
+        return "unknown"
+
+
+def _detect_focus(msg_lower: str) -> str:
+    """Detect what specific aspect the user is asking about.
+
+    Returns one of: 'awaiting_quotes', 'vendors', 'waiting_duration', 'all_details', or ''.
+    """
+    if any(k in msg_lower for k in [
+        "awaiting quote", "awaiting quotes", "waiting for quote",
+        "pending quote", "which items are awaiting", "what is pending",
+        "what's pending", "still waiting"
+    ]):
+        return "awaiting_quotes"
+
+    if any(k in msg_lower for k in [
+        "vendor", "vendors", "who was sent", "which vendor",
+        "sent to whom", "supplier", "who did we send"
+    ]):
+        return "vendors"
+
+    if any(k in msg_lower for k in [
+        "how long", "waiting time", "wait time", "since when",
+        "how many days", "duration", "overdue"
+    ]):
+        return "waiting_duration"
+
+    return ""
+
+
+def _build_line_items_table(line_items: list) -> str:
+    """Build a markdown table of line items from costing_line_items data."""
+    if not line_items:
+        return "No line items found."
+
+    rows = []
+    rows.append("| # | Item Name | Item Code | Qty | Unit Price | Price Status | Price Source |")
+    rows.append("|---|-----------|-----------|-----|------------|--------------|-------------|")
+
+    for idx, item in enumerate(line_items, 1):
+        name = item.get("item_name") or "N/A"
+        code = item.get("item_code") or "-"
+        qty = item.get("quantity") or 1
+        price = _format_price(item.get("unit_price"))
+        status = item.get("price_status") or "unknown"
+        source = item.get("price_source") or "-"
+        rows.append(f"| {idx} | {name} | {code} | {qty} | {price} | {status} | {source} |")
+
+    return "\n".join(rows)
+
+
+def _build_awaiting_quotes_context(job: dict) -> str:
+    """Build context focused on items awaiting quotes."""
+    quote_requests = job.get("quote_requests", [])
+    pending_quotes = [qr for qr in quote_requests if (qr.get("status") or "").lower() == "pending"]
+    received_quotes = [qr for qr in quote_requests if (qr.get("status") or "").lower() == "received"]
+
+    parts = [f"Job ID: {job.get('job_id')}", f"Description: {job.get('item_details') or 'N/A'}", ""]
+
+    if pending_quotes:
+        parts.append(f"### Items Awaiting Quotes ({len(pending_quotes)})")
+        parts.append("| # | Item Name | Vendor Email | Sent | Waiting |")
+        parts.append("|---|-----------|-------------|------|---------|")
+        for idx, qr in enumerate(pending_quotes, 1):
+            name = qr.get("item_name") or "N/A"
+            vendor = qr.get("vendor_email") or "-"
+            sent_at = qr.get("sent_at") or ""
+            waiting = _time_ago(sent_at) if sent_at else "-"
+            sent_display = sent_at[:10] if sent_at else "-"
+            parts.append(f"| {idx} | {name} | {vendor} | {sent_display} | {waiting} |")
+    else:
+        parts.append("No items are currently awaiting quotes.")
+
+    if received_quotes:
+        parts.append(f"\n### Quotes Already Received ({len(received_quotes)})")
+        parts.append("| # | Item Name | Price Received | Vendor | Received |")
+        parts.append("|---|-----------|---------------|--------|----------|")
+        for idx, qr in enumerate(received_quotes, 1):
+            name = qr.get("item_name") or "N/A"
+            price = _format_price(qr.get("received_price"))
+            vendor = qr.get("vendor_email") or "-"
+            received_at = qr.get("received_at") or ""
+            received_display = received_at[:10] if received_at else "-"
+            parts.append(f"| {idx} | {name} | {price} | {vendor} | {received_display} |")
+
+    return "\n".join(parts)
+
+
+def _build_vendors_context(job: dict) -> str:
+    """Build context focused on which vendors were contacted."""
+    quote_requests = job.get("quote_requests", [])
+    line_items = job.get("line_items", [])
+
+    parts = [f"Job ID: {job.get('job_id')}", f"Description: {job.get('item_details') or 'N/A'}", ""]
+
+    # Group by vendor
+    vendor_map = {}
+    for qr in quote_requests:
+        vendor = qr.get("vendor_email") or "Unknown"
+        if vendor not in vendor_map:
+            vendor_map[vendor] = []
+        vendor_map[vendor].append(qr)
+
+    if vendor_map:
+        parts.append("### Vendors Contacted")
+        for vendor, items in vendor_map.items():
+            pending_count = sum(1 for i in items if (i.get("status") or "").lower() == "pending")
+            received_count = sum(1 for i in items if (i.get("status") or "").lower() == "received")
+            parts.append(f"\n**{vendor}** — {len(items)} item(s) ({pending_count} pending, {received_count} received)")
+            parts.append("| Item | Status | Sent | Received Price |")
+            parts.append("|------|--------|------|---------------|")
+            for qr in items:
+                name = qr.get("item_name") or "N/A"
+                status = qr.get("status") or "unknown"
+                sent_at = (qr.get("sent_at") or "")[:10] or "-"
+                price = _format_price(qr.get("received_price")) if qr.get("received_price") else "-"
+                parts.append(f"| {name} | {status} | {sent_at} | {price} |")
+    else:
+        # Fall back to vendor_email on line items
+        vendors_from_items = set()
+        for li in line_items:
+            v = li.get("vendor_email")
+            if v:
+                vendors_from_items.add(v)
+        if vendors_from_items:
+            parts.append("### Assigned Vendors")
+            for v in sorted(vendors_from_items):
+                items_for_v = [li for li in line_items if li.get("vendor_email") == v]
+                parts.append(f"- **{v}**: {', '.join(li.get('item_name') or 'N/A' for li in items_for_v)}")
+        else:
+            parts.append("No vendor quote requests have been sent for this job yet.")
+
+    return "\n".join(parts)
+
+
+def _build_waiting_duration_context(job: dict) -> str:
+    """Build context focused on how long quotes have been waiting."""
+    quote_requests = job.get("quote_requests", [])
+    pending_quotes = [qr for qr in quote_requests if (qr.get("status") or "").lower() == "pending"]
+
+    parts = [f"Job ID: {job.get('job_id')}", f"Description: {job.get('item_details') or 'N/A'}", ""]
+
+    if pending_quotes:
+        parts.append(f"### Waiting Duration for Pending Quotes ({len(pending_quotes)})")
+        parts.append("| # | Item Name | Vendor | Sent On | Waiting Since |")
+        parts.append("|---|-----------|--------|---------|--------------|")
+
+        # Sort by longest waiting first
+        def _sort_key(qr):
+            sent = qr.get("sent_at") or ""
+            return sent  # Earlier date = longer wait = sorts first
+
+        for idx, qr in enumerate(sorted(pending_quotes, key=_sort_key), 1):
+            name = qr.get("item_name") or "N/A"
+            vendor = qr.get("vendor_email") or "-"
+            sent_at = qr.get("sent_at") or ""
+            sent_display = sent_at[:10] if sent_at else "-"
+            waiting = _time_ago(sent_at) if sent_at else "-"
+            parts.append(f"| {idx} | {name} | {vendor} | {sent_display} | {waiting} |")
+
+        # Flag long-waiting items
+        now = datetime.now(timezone.utc)
+        overdue = []
+        for qr in pending_quotes:
+            sent_at = qr.get("sent_at")
+            if sent_at:
+                try:
+                    dt = datetime.fromisoformat(sent_at)
+                    if dt.tzinfo is None:
+                        dt = dt.replace(tzinfo=timezone.utc)
+                    if (now - dt).days >= 3:
+                        overdue.append(qr)
+                except (ValueError, TypeError):
+                    pass
+
+        if overdue:
+            parts.append(f"\n⚠️ **{len(overdue)} item(s) have been waiting 3+ days** — consider sending a reminder.")
+    else:
+        parts.append("No items are currently awaiting quotes — all quotes have been received or no requests were sent.")
+
+    return "\n".join(parts)
+
+
+def _build_status_context(job_statuses: list, specific_job_id: str = None, wants_details: bool = False, focus: str = "") -> str:
     """
     Build a structured context string for the LLM to present conversationally.
     """
@@ -54,6 +267,14 @@ def _build_status_context(job_statuses: list, specific_job_id: str = None, wants
         status = _status_label(job.get('status'))
         created_at = job.get('created_at') or 'N/A'
         description = job.get('item_details') or 'N/A'
+
+        # Focused sub-queries
+        if focus == "awaiting_quotes":
+            return _build_awaiting_quotes_context(job)
+        if focus == "vendors":
+            return _build_vendors_context(job)
+        if focus == "waiting_duration":
+            return _build_waiting_duration_context(job)
 
         # Count items by status
         line_items = job.get("line_items", [])
@@ -70,6 +291,15 @@ def _build_status_context(job_statuses: list, specific_job_id: str = None, wants
             f"Available Products: {len(available_items)}"
         ]
 
+        # Always show line items table when querying a specific job
+        if line_items:
+            context_parts.append("\n### Line Items")
+            context_parts.append(_build_line_items_table(line_items))
+
+            # Calculate total
+            total = sum((item.get("unit_price") or 0) * (item.get("quantity") or 1) for item in line_items)
+            context_parts.append(f"\n**Total Estimated Cost: {_format_price(total)}**")
+
         # Add detailed quote information if requested
         if wants_details:
             quote_requests = job.get("quote_requests", [])
@@ -77,16 +307,27 @@ def _build_status_context(job_statuses: list, specific_job_id: str = None, wants
             received_quotes = [qr for qr in quote_requests if (qr.get("status") or "").lower() == "received"]
 
             if pending_quotes:
-                context_parts.append("\nPending Quote Requests:")
-                for item in pending_quotes:
-                    sent_at = item.get("sent_at") or "unknown"
-                    context_parts.append(f"  - {item.get('item_name')} (sent {sent_at})")
+                context_parts.append("\n### Pending Quote Requests")
+                context_parts.append("| Item | Vendor | Sent | Waiting |")
+                context_parts.append("|------|--------|------|---------|")
+                for qr in pending_quotes:
+                    name = qr.get("item_name") or "N/A"
+                    vendor = qr.get("vendor_email") or "-"
+                    sent_at = qr.get("sent_at") or ""
+                    sent_display = sent_at[:10] if sent_at else "-"
+                    waiting = _time_ago(sent_at) if sent_at else "-"
+                    context_parts.append(f"| {name} | {vendor} | {sent_display} | {waiting} |")
 
             if received_quotes:
-                context_parts.append("\nQuotes Received:")
-                for item in received_quotes:
-                    received_at = item.get("received_at") or "unknown"
-                    context_parts.append(f"  - {item.get('item_name')} (received {received_at})")
+                context_parts.append("\n### Quotes Received")
+                context_parts.append("| Item | Vendor | Price | Received |")
+                context_parts.append("|------|--------|-------|----------|")
+                for qr in received_quotes:
+                    name = qr.get("item_name") or "N/A"
+                    vendor = qr.get("vendor_email") or "-"
+                    price = _format_price(qr.get("received_price"))
+                    received_at = (qr.get("received_at") or "")[:10] or "-"
+                    context_parts.append(f"| {name} | {vendor} | {price} | {received_at} |")
 
         return "\n".join(context_parts)
 
@@ -132,12 +373,16 @@ def _build_status_context(job_statuses: list, specific_job_id: str = None, wants
                 if pending_items:
                     for item in pending_items:
                         sent_at = item.get("sent_at") or "unknown"
-                        context_parts.append(f"  • {item.get('item_name')} - Pending (sent {sent_at})")
+                        vendor = item.get("vendor_email") or "unknown vendor"
+                        waiting = _time_ago(sent_at) if sent_at != "unknown" else "unknown"
+                        context_parts.append(f"  • {item.get('item_name')} — sent to {vendor} ({waiting})")
 
                 if received_items:
                     for item in received_items:
                         received_at = item.get("received_at") or "unknown"
-                        context_parts.append(f"  • {item.get('item_name')} - Received ({received_at})")
+                        vendor = item.get("vendor_email") or "unknown vendor"
+                        price = _format_price(item.get("received_price"))
+                        context_parts.append(f"  • {item.get('item_name')} — received from {vendor} at {price}")
 
         # Add helpful footer
         context_parts.append("\nNote: User can ask for details on a specific job by providing the job ID.")
@@ -153,12 +398,13 @@ _status_prompt = ChatPromptTemplate.from_messages([
 {status_context}
 
 Present this information to the user in a conversational, helpful manner. Follow these guidelines:
-1. Start with a brief summary (e.g., "You have X jobs in total")
-2. Highlight any urgent items (jobs ready for review, long-pending quotes)
-3. Use markdown tables ONLY for multiple jobs overview (Job ID | Status | Created | Description)
-4. For single job details, be more conversational with bullet points
-5. End with a helpful next step or offer to help further
+1. Start with a brief summary
+2. Highlight any urgent items (jobs ready for review, long-pending quotes 3+ days)
+3. Use markdown tables for multiple jobs overview (Job ID | Status | Created | Description)
+4. For single job details, include the line items / quote markdown tables exactly as provided above - do NOT reformat or omit them
+5. End with a helpful next step or offer to help further (e.g. "would you like to resend a reminder?")
 6. Keep it concise but informative
+7. Preserve all markdown formatting (tables, bold text) from the status context
 
 User's original query: {user_query}"""),
 ])
@@ -170,12 +416,24 @@ _status_chain = _status_prompt | llm
 def status_node(state: AgentState):
     """
     Returns conversational status summaries for the user's costing jobs.
+    Supports focused follow-up queries about quotes, vendors, and wait times.
     """
     user_id = state.get("user_id", 1)
     user_message = state["messages"][-1].content if state.get("messages") else ""
     job_id = _extract_job_id(user_message)
     msg_lower = (user_message or "").lower()
-    wants_details = any(k in msg_lower for k in ["detail", "details", "items", "pending", "quotes", "quote status", "breakdown"])
+    wants_details = any(k in msg_lower for k in [
+        "detail", "details", "items", "pending", "quotes", "quote status",
+        "breakdown", "line items", "show me", "what's in",
+        "awaiting", "vendor", "how long", "waiting", "overdue"
+    ])
+
+    # Detect focused sub-query
+    focus = _detect_focus(msg_lower)
+
+    # Fall back to last_mentioned_job_id if user asks for details without specifying a job ID
+    if not job_id and (wants_details or focus):
+        job_id = state.get("last_mentioned_job_id") or ""
 
     # Fetch job statuses
     job_statuses = tools.get_costing_job_statuses(user_id=user_id, job_id=job_id or None)
@@ -192,7 +450,7 @@ def status_node(state: AgentState):
         }
 
     # Build structured context
-    status_context = _build_status_context(job_statuses, job_id, wants_details)
+    status_context = _build_status_context(job_statuses, job_id, wants_details, focus)
 
     # Generate conversational response using LLM
     try:

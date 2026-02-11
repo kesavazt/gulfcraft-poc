@@ -1,17 +1,16 @@
 """
 Email Monitor Service
-Polls inbox via IMAP for incoming quotation emails and extracts prices using Mistral OCR.
+Polls inbox via Microsoft Graph API for incoming quotation emails and extracts prices using Mistral OCR.
 """
 import os
 import sys
+import re
 import time
-import email
-import imaplib
+import base64
 import threading
-from email.header import decode_header
-from email.message import Message
+import requests
 from datetime import datetime
-from typing import List, Dict, Any, Optional, cast
+from typing import List, Dict, Any, Optional
 
 # Ensure the backend package is importable when running as a script
 BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -45,14 +44,12 @@ except ImportError:
     print("[Warning] pdf_extractor not available")
 
 
-# IMAP configuration for Gmail
-IMAP_SERVER = os.getenv("IMAP_SERVER", "imap.gmail.com")
-IMAP_PORT = int(os.getenv("IMAP_PORT", "993"))
+GRAPH_API_BASE = "https://graph.microsoft.com/v1.0"
 
 
 class EmailMonitor:
     """
-    Monitors inbox via IMAP for incoming price quotation responses.
+    Monitors inbox via Microsoft Graph API for incoming price quotation responses.
     Uses Mistral OCR to extract prices from PDF attachments.
     """
 
@@ -60,61 +57,53 @@ class EmailMonitor:
         self.poll_interval = poll_interval
         self.running = False
         self._thread = None
-        self.temp_dir = "temp_attachments"
-        self.imap_connection: Optional[imaplib.IMAP4_SSL] = None
+        self.temp_dir = os.path.join(BASE_DIR, "temp_attachments")
+        self._access_token: Optional[str] = None
 
         # Create temp directory for attachments
         os.makedirs(self.temp_dir, exist_ok=True)
 
-        # Get IMAP credentials from config
-        # For Gmail, use GMAIL_APP_PASSWORD if available
-        self.imap_email = config.SMTP_EMAIL
-        self.imap_password = os.getenv("GMAIL_APP_PASSWORD", "").strip('"') or config.SMTP_PASSWORD
+        # MS Graph credentials
+        self.tenant_id = config.MS_GRAPH_TENANT_ID
+        self.client_id = config.MS_GRAPH_CLIENT_ID
+        self.client_secret = config.MS_GRAPH_CLIENT_SECRET
+        self.mailbox = config.MS_GRAPH_SENDER_EMAIL
 
-        print(f"[EmailMonitor] Configured for IMAP: {IMAP_SERVER}:{IMAP_PORT}")
-        print(f"[EmailMonitor] Email account: {self.imap_email}")
+        print(f"[EmailMonitor] Configured for Microsoft Graph API")
+        print(f"[EmailMonitor] Mailbox: {self.mailbox}")
 
-    def _connect_imap(self) -> bool:
-        """Connect to IMAP server."""
+    def _get_access_token(self) -> Optional[str]:
+        """Get OAuth2 access token for Microsoft Graph API."""
+        if not all([self.tenant_id, self.client_id, self.client_secret]):
+            print("[EmailMonitor] Missing MS Graph credentials in .env")
+            return None
+
+        url = f"https://login.microsoftonline.com/{self.tenant_id}/oauth2/v2.0/token"
+        data = {
+            "grant_type": "client_credentials",
+            "client_id": self.client_id,
+            "client_secret": self.client_secret,
+            "scope": "https://graph.microsoft.com/.default",
+        }
+
         try:
-            # Close existing connection if any
-            if self.imap_connection:
-                try:
-                    self.imap_connection.logout()
-                except:
-                    pass
-
-            # Connect to IMAP server with SSL
-            print(f"[EmailMonitor] Connecting to {IMAP_SERVER}:{IMAP_PORT}...")
-            self.imap_connection = imaplib.IMAP4_SSL(IMAP_SERVER, IMAP_PORT)
-
-            # Login
-            print(f"[EmailMonitor] Logging in as {self.imap_email}...")
-            self.imap_connection.login(self.imap_email, self.imap_password)
-
-            print("[EmailMonitor] IMAP connection established")
-            return True
-
-        except imaplib.IMAP4.error as e:
-            print(f"[EmailMonitor] IMAP login error: {e}")
-            print("[EmailMonitor] For Gmail, you need to use an App Password:")
-            print("  1. Enable 2-Step Verification in your Google Account")
-            print("  2. Go to Google Account > Security > App passwords")
-            print("  3. Generate a new app password for 'Mail'")
-            print("  4. Use that password in SMTP_PASSWORD in .env")
-            return False
+            resp = requests.post(url, data=data, timeout=30)
+            resp.raise_for_status()
+            self._access_token = resp.json().get("access_token")
+            if not self._access_token:
+                print(f"[EmailMonitor] No access_token in response: {resp.json()}")
+                return None
+            return self._access_token
         except Exception as e:
-            print(f"[EmailMonitor] IMAP connection error: {e}")
-            return False
+            print(f"[EmailMonitor] Auth error: {e}")
+            return None
 
-    def _disconnect_imap(self):
-        """Disconnect from IMAP server."""
-        if self.imap_connection:
-            try:
-                self.imap_connection.logout()
-            except:
-                pass
-            self.imap_connection = None
+    def _graph_headers(self) -> dict:
+        """Return authorization headers for Graph API calls."""
+        return {
+            "Authorization": f"Bearer {self._access_token}",
+            "Content-Type": "application/json",
+        }
 
     def start(self):
         """Start the email monitoring service in a background thread."""
@@ -130,7 +119,6 @@ class EmailMonitor:
     def stop(self):
         """Stop the email monitoring service."""
         self.running = False
-        self._disconnect_imap()
         if self._thread:
             self._thread.join(timeout=5)
         print("[EmailMonitor] Stopped")
@@ -142,69 +130,63 @@ class EmailMonitor:
                 self._check_for_emails()
             except Exception as e:
                 print(f"[EmailMonitor] Error: {e}")
-                # Reconnect on error
-                self._disconnect_imap()
+                self._access_token = None  # Force re-auth on next poll
 
             time.sleep(self.poll_interval)
 
     def _check_for_emails(self):
-        """Check inbox for new quotation emails via IMAP."""
+        """Check inbox for new quotation emails via Microsoft Graph API."""
         print("[EmailMonitor] Checking for new emails...")
 
-        # Connect to IMAP if not connected
-        if not self.imap_connection:
-            if not self._connect_imap():
+        # Get/refresh access token
+        if not self._access_token:
+            if not self._get_access_token():
                 return
 
-        # Get all pending quote requests (can be empty, we still process emails)
+        # Get all pending quote requests
         pending_requests = self._get_pending_requests()
         print(f"[EmailMonitor] {len(pending_requests)} pending quote requests in DB")
 
+        # Fetch unread emails with quotation-related subjects
+        # OData filter: unread AND (subject contains keywords)
+        filter_parts = [
+            "contains(subject, 'Price Quotation Request')",
+            "contains(subject, 'JOB-')",
+            "contains(subject, 'COST-')",
+        ]
+        odata_filter = f"isRead eq false and ({' or '.join(filter_parts)})"
+
+        url = (
+            f"{GRAPH_API_BASE}/users/{self.mailbox}/messages"
+            f"?$filter={odata_filter}"
+            f"&$select=id,subject,from,body,hasAttachments,receivedDateTime"
+            f"&$top=50"
+            f"&$orderby=receivedDateTime desc"
+        )
+
         try:
-            if not self.imap_connection:
-                return
+            resp = requests.get(url, headers=self._graph_headers(), timeout=30)
 
-            conn = self.imap_connection
-            # Select inbox
-            conn.select("INBOX")
+            if resp.status_code == 401:
+                print("[EmailMonitor] Token expired, refreshing...")
+                self._access_token = None
+                if not self._get_access_token():
+                    return
+                resp = requests.get(url, headers=self._graph_headers(), timeout=30)
 
-            # Search for unread emails - look for replies to quotation requests
-            # Search for emails containing "Quotation" OR "JOB-" in subject
-            # We search for multiple patterns to catch replies
-            all_email_ids = set()
+            resp.raise_for_status()
+            messages = resp.json().get("value", [])
+            print(f"[EmailMonitor] Found {len(messages)} unread quotation-related emails")
 
-            # Search patterns for quotation-related emails
-            search_patterns = [
-                '(UNSEEN SUBJECT "Price Quotation Request")',
-                '(UNSEEN SUBJECT "RE: Price Quotation")',
-                '(UNSEEN SUBJECT "JOB-")',
-                '(UNSEEN SUBJECT "COST-")',
-            ]
-
-            for pattern in search_patterns:
+            for msg in messages:
                 try:
-                    status, messages = conn.search(None, pattern)
-                    if status == "OK" and messages[0]:
-                        for email_id in messages[0].split():
-                            all_email_ids.add(email_id)
-                except:
-                    pass
-
-            email_ids = list(all_email_ids)
-            print(f"[EmailMonitor] Found {len(email_ids)} unread quotation-related emails")
-
-            for email_id in email_ids:
-                try:
-                    self._process_email(email_id, pending_requests)
+                    self._process_email(msg, pending_requests)
                 except Exception as e:
-                    print(f"[EmailMonitor] Error processing email {email_id}: {e}")
+                    print(f"[EmailMonitor] Error processing email {msg.get('id', '?')}: {e}")
 
-        except imaplib.IMAP4.error as e:
-            print(f"[EmailMonitor] IMAP error: {e}")
-            self._disconnect_imap()
         except Exception as e:
             print(f"[EmailMonitor] Error checking emails: {e}")
-            self._disconnect_imap()
+            self._access_token = None
 
     def _get_pending_requests(self) -> List[Dict[str, Any]]:
         """Get all pending quote requests from database."""
@@ -227,32 +209,11 @@ class EmailMonitor:
         finally:
             session.close()
 
-    def _process_email(self, email_id: bytes, pending_requests: List[Dict[str, Any]]):
-        """Process a single email."""
-        if not self.imap_connection:
-            return
-        conn = self.imap_connection
-
-        # Fetch the email
-        message_id = email_id.decode() if isinstance(email_id, bytes) else str(email_id)
-        status, msg_data = conn.fetch(message_id, "(RFC822)")
-
-        if status != "OK":
-            print(f"[EmailMonitor] Failed to fetch email {email_id}")
-            return
-
-        if not msg_data or not msg_data[0]:
-            print(f"[EmailMonitor] Empty email data for {email_id}")
-            return
-
-        # Parse the email
-        raw_email = msg_data[0][1]
-        raw_bytes = cast(bytes, raw_email)
-        msg = email.message_from_bytes(raw_bytes)
-
-        # Decode subject
-        subject = self._decode_header(msg["Subject"])
-        from_addr = self._decode_header(msg["From"])
+    def _process_email(self, msg: Dict[str, Any], pending_requests: List[Dict[str, Any]]):
+        """Process a single email from Graph API response."""
+        msg_id = msg["id"]
+        subject = msg.get("subject", "")
+        from_addr = msg.get("from", {}).get("emailAddress", {}).get("address", "unknown")
 
         print(f"[EmailMonitor] Processing email from: {from_addr}")
         print(f"[EmailMonitor] Subject: {subject}")
@@ -262,13 +223,12 @@ class EmailMonitor:
 
         if not job_id:
             print(f"[EmailMonitor] Could not extract job_id from subject: {subject}")
-            # Mark as read anyway to avoid reprocessing
-            self._mark_as_read(email_id)
+            self._mark_as_read(msg_id)
             return
 
         print(f"[EmailMonitor] Extracted job_id: {job_id}, item_name: {item_name}")
 
-        # Find matching pending request (optional - we can still process without it)
+        # Find matching pending request
         matching_request = None
         for req in pending_requests:
             if req["job_id"] == job_id:
@@ -283,152 +243,117 @@ class EmailMonitor:
         else:
             print(f"[EmailMonitor] No pending request found for job_id: {job_id} (will still extract data)")
 
-        # Use item_name from subject if no matching request
         default_item_name = item_name or "Unknown Item"
         if matching_request:
             default_item_name = matching_request["item_name"]
 
-        # Extract attachments
-        pdf_paths = self._extract_pdf_attachments(msg)
+        # Download attachments if present
+        if msg.get("hasAttachments"):
+            pdf_paths = self._download_attachments(msg_id)
 
-        if pdf_paths:
-            print(f"[EmailMonitor] Found {len(pdf_paths)} PDF attachment(s)")
+            if pdf_paths:
+                print(f"[EmailMonitor] Found {len(pdf_paths)} PDF attachment(s)")
 
-            for pdf_path in pdf_paths:
-                # Extract prices from PDF using OCR
-                extracted_data = self.extract_prices_from_pdf(pdf_path)
+                for pdf_path in pdf_paths:
+                    extracted_data = self.extract_prices_from_pdf(pdf_path)
 
-                if extracted_data:
-                    print(f"[EmailMonitor] Extracted {len(extracted_data)} items from PDF")
-                    self._update_prices_from_extraction(
-                        job_id=job_id,
-                        item_name=default_item_name,
-                        extracted_data=extracted_data
-                    )
-                else:
-                    print(f"[EmailMonitor] No data extracted from PDF")
+                    if extracted_data:
+                        print(f"[EmailMonitor] Extracted {len(extracted_data)} items from PDF")
+                        self._update_prices_from_extraction(
+                            job_id=job_id,
+                            item_name=default_item_name,
+                            extracted_data=extracted_data
+                        )
+                    else:
+                        print(f"[EmailMonitor] No data extracted from PDF")
 
-                # Clean up temp file
-                try:
-                    os.remove(pdf_path)
-                except:
-                    pass
+                    try:
+                        os.remove(pdf_path)
+                    except:
+                        pass
+
+                self._mark_as_read(msg_id)
+                return
+
+        # No PDF attachments, try body text
+        body_content = msg.get("body", {}).get("content", "")
+        body_type = msg.get("body", {}).get("contentType", "text")
+
+        if body_type == "html":
+            body_text = re.sub(r'<[^>]+>', '', body_content)
         else:
-            # No PDF found, try body
-            body_text = self._get_email_body(msg)
-            print(f"[EmailMonitor] No PDF attachment. Email body preview: {body_text[:200] if body_text else 'Empty'}")
+            body_text = body_content
 
-            price = self._extract_price_from_text(body_text)
-            if price:
-                print(f"[EmailMonitor] Extracted price from body: {price}")
-                self._update_prices_from_extraction(
-                    job_id=job_id,
-                    item_name=default_item_name,
-                    extracted_data=[{"item_name": default_item_name, "unit_price": price}]
-                )
+        print(f"[EmailMonitor] No PDF attachment. Email body preview: {body_text[:200] if body_text else 'Empty'}")
 
-        # Mark email as read
-        self._mark_as_read(email_id)
+        price = self._extract_price_from_text(body_text)
+        if price:
+            print(f"[EmailMonitor] Extracted price from body: {price}")
+            self._update_prices_from_extraction(
+                job_id=job_id,
+                item_name=default_item_name,
+                extracted_data=[{"item_name": default_item_name, "unit_price": price}]
+            )
+
+        self._mark_as_read(msg_id)
         print(f"[EmailMonitor] Marked email as read")
 
-    def _decode_header(self, header_value: str) -> str:
-        """Decode email header value."""
-        if not header_value:
-            return ""
-
-        decoded_parts = decode_header(header_value)
-        result = []
-
-        for part, encoding in decoded_parts:
-            if isinstance(part, bytes):
-                result.append(part.decode(encoding or "utf-8", errors="replace"))
-            else:
-                result.append(part)
-
-        return " ".join(result)
-
-    def _extract_pdf_attachments(self, msg: Message) -> List[str]:
-        """Extract PDF attachments from email."""
+    def _download_attachments(self, message_id: str) -> List[str]:
+        """Download PDF attachments from an email via Graph API."""
         pdf_paths = []
 
-        if msg.is_multipart():
-            for part in msg.walk():
-                content_type = part.get_content_type()
-                content_disposition = str(part.get("Content-Disposition", ""))
+        url = f"{GRAPH_API_BASE}/users/{self.mailbox}/messages/{message_id}/attachments"
 
-                # Check if it's a PDF attachment
-                if "attachment" in content_disposition or content_type == "application/pdf":
-                    filename = part.get_filename()
+        try:
+            resp = requests.get(url, headers=self._graph_headers(), timeout=30)
+            resp.raise_for_status()
+            attachments = resp.json().get("value", [])
 
-                    if filename:
-                        filename = self._decode_header(filename)
+            for att in attachments:
+                filename = att.get("name", "attachment")
+                content_type = att.get("contentType", "")
+                content_bytes_b64 = att.get("contentBytes")
 
-                    if not filename:
-                        filename = "attachment.pdf"
+                is_pdf = (
+                    filename.lower().endswith(".pdf")
+                    or content_type == "application/pdf"
+                )
 
-                    # Check if it's a PDF
-                    if filename.lower().endswith(".pdf") or content_type == "application/pdf":
-                        # Get attachment content
-                        payload = part.get_payload(decode=True)
+                if is_pdf and content_bytes_b64:
+                    file_bytes = base64.b64decode(content_bytes_b64)
+                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    safe_filename = f"{timestamp}_{filename}"
+                    filepath = os.path.join(self.temp_dir, safe_filename)
 
-                        if payload:
-                            # Save to temp file
-                            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                            safe_filename = f"{timestamp}_{filename}"
-                            filepath = os.path.join(self.temp_dir, safe_filename)
+                    with open(filepath, "wb") as f:
+                        f.write(file_bytes)
 
-                            with open(filepath, "wb") as f:
-                                f.write(cast(bytes, payload))
+                    pdf_paths.append(filepath)
+                    print(f"[EmailMonitor] Saved PDF: {filepath} ({len(file_bytes)} bytes)")
+                else:
+                    print(f"[EmailMonitor] Skipping non-PDF attachment: {filename} ({content_type})")
 
-                            pdf_paths.append(filepath)
-                            print(f"[EmailMonitor] Saved PDF: {filepath}")
+        except Exception as e:
+            print(f"[EmailMonitor] Error downloading attachments: {e}")
 
         return pdf_paths
 
-    def _get_email_body(self, msg: Message) -> str:
-        """Extract email body text."""
-        body = ""
-
-        if msg.is_multipart():
-            for part in msg.walk():
-                content_type = part.get_content_type()
-
-                if content_type == "text/plain":
-                    payload = part.get_payload(decode=True)
-                    if payload:
-                        charset = part.get_content_charset() or "utf-8"
-                        body = cast(bytes, payload).decode(charset, errors="replace")
-                        break
-                elif content_type == "text/html" and not body:
-                    payload = part.get_payload(decode=True)
-                    if payload:
-                        charset = part.get_content_charset() or "utf-8"
-                        html_body = cast(bytes, payload).decode(charset, errors="replace")
-                        # Strip HTML tags
-                        import re
-                        body = re.sub(r'<[^>]+>', '', html_body)
-        else:
-            payload = msg.get_payload(decode=True)
-            if payload:
-                charset = msg.get_content_charset() or "utf-8"
-                body = cast(bytes, payload).decode(charset, errors="replace")
-
-        return body
-
-    def _mark_as_read(self, email_id: bytes):
-        """Mark an email as read (add SEEN flag)."""
+    def _mark_as_read(self, message_id: str):
+        """Mark an email as read via Graph API."""
+        url = f"{GRAPH_API_BASE}/users/{self.mailbox}/messages/{message_id}"
         try:
-            if not self.imap_connection:
-                return
-            message_id = email_id.decode() if isinstance(email_id, bytes) else str(email_id)
-            self.imap_connection.store(message_id, "+FLAGS", "\\Seen")
+            resp = requests.patch(
+                url,
+                headers=self._graph_headers(),
+                json={"isRead": True},
+                timeout=15
+            )
+            resp.raise_for_status()
         except Exception as e:
             print(f"[EmailMonitor] Error marking email as read: {e}")
 
     def _parse_subject(self, subject: str) -> tuple:
         """Parse job_id and item_name from email subject."""
-        # Expected format: "RE: Price Quotation Request - JOB-XXXXXXXX - Item Name"
-
         job_id = None
         item_name = None
 
@@ -445,10 +370,8 @@ class EmailMonitor:
 
         for i, part in enumerate(parts):
             part = part.strip()
-            # Look for JOB-XXXXXXXX pattern
             if part.startswith("JOB-") or part.startswith("COST-"):
                 job_id = part
-                # Item name is usually the next part
                 if i + 1 < len(parts):
                     item_name = parts[i + 1].strip()
                 break
@@ -457,24 +380,20 @@ class EmailMonitor:
 
     def _extract_price_from_text(self, text: str) -> Optional[float]:
         """Try to extract a price from plain text."""
-        import re
-
         if not text:
             return None
 
-        # Look for common price patterns
         patterns = [
-            r'\$[\d,]+\.?\d*',  # $1,234.56
-            r'USD\s*[\d,]+\.?\d*',  # USD 1234.56
-            r'AED\s*[\d,]+\.?\d*',  # AED 1,234.56
-            r'[\d,]+\.?\d*\s*(?:USD|AED|SAR)',  # 1234.56 USD
-            r'(?:price|total|amount|cost)[\s:]*[\d,]+\.?\d*',  # price: 1234.56
+            r'\$[\d,]+\.?\d*',
+            r'USD\s*[\d,]+\.?\d*',
+            r'AED\s*[\d,]+\.?\d*',
+            r'[\d,]+\.?\d*\s*(?:USD|AED|SAR)',
+            r'(?:price|total|amount|cost)[\s:]*[\d,]+\.?\d*',
         ]
 
         for pattern in patterns:
             matches = re.findall(pattern, text, re.IGNORECASE)
             if matches:
-                # Extract numeric value from first match
                 numeric = re.sub(r'[^\d.]', '', matches[0])
                 try:
                     return float(numeric)
@@ -509,7 +428,6 @@ class EmailMonitor:
                     print(f"[EmailMonitor] LLM Match: Line item {matched_id} at confidence {confidence:.2f}")
                     print(f"[EmailMonitor] Reason: {match_reason}")
 
-                    # Use precise ID-based update instead of name matching
                     success = mark_quote_received_by_id(
                         line_item_id=matched_id,
                         price=cost_price,
@@ -517,7 +435,7 @@ class EmailMonitor:
                     )
 
                     if success:
-                        print(f"[EmailMonitor] ✓ Updated price for {ocr_item.get('item_name', item_name)}: {cost_price}")
+                        print(f"[EmailMonitor] Updated price for {ocr_item.get('item_name', item_name)}: {cost_price}")
 
                         status = check_all_quotes_received(job_id)
                         if status["all_received"]:
@@ -533,7 +451,6 @@ class EmailMonitor:
                 cost_price = float(cost_price)
                 print(f"[EmailMonitor] Cost: {cost_price} (no margin applied)")
 
-                # Update the database with unit cost only
                 success = mark_quote_received(
                     job_id=job_id,
                     item_name=extracted_item_name,
@@ -543,35 +460,23 @@ class EmailMonitor:
                 if success:
                     print(f"[EmailMonitor] Updated price for {extracted_item_name}: {cost_price}")
 
-                    # Check if all quotes received
                     status = check_all_quotes_received(job_id)
                     if status["all_received"]:
                         print(f"[EmailMonitor] All quotes received for {job_id}. Regenerating costing sheet.")
                         self._regenerate_costing_sheet(job_id)
 
     def extract_prices_from_pdf(self, pdf_path: str) -> List[Dict[str, Any]]:
-        """
-        Extract item names and prices from a PDF quotation using Mistral OCR.
-        """
+        """Extract item names and prices from a PDF quotation using Mistral OCR."""
         if PDF_EXTRACTOR_AVAILABLE and extract_line_items_from_pdf:
             try:
-                # Use the pdf_extractor module
                 items = extract_line_items_from_pdf(pdf_path)
                 return items
             except Exception as e:
                 print(f"[EmailMonitor] PDF extraction error: {e}")
                 return []
         else:
-            print("[EmailMonitor] PDF extractor not available. Using mock extraction.")
-            return self._mock_price_extraction("Unknown Item")
-
-    def _mock_price_extraction(self, item_name: str) -> List[Dict[str, Any]]:
-        """Mock price extraction for demo purposes."""
-        import random
-        return [{
-            "item_name": item_name,
-            "unit_price": round(random.uniform(500, 3000), 2)
-        }]
+            print("[EmailMonitor] PDF extractor not available.")
+            return []
 
     def _regenerate_costing_sheet(self, job_id: str):
         """Regenerate the costing sheet with updated prices."""
@@ -584,7 +489,6 @@ class EmailMonitor:
             if not costing_req:
                 return
 
-            # Get all line items
             line_items = session.query(CostingLineItem).filter(
                 CostingLineItem.costing_request_id == costing_req.id
             ).all()
@@ -597,7 +501,6 @@ class EmailMonitor:
                 "price_status": item.price_status
             } for item in line_items]
 
-            # Regenerate sheet
             file_path = create_costing_sheet_with_items(
                 job_id=job_id,
                 items=items,
@@ -644,10 +547,7 @@ def stop_email_monitor():
 
 # Manual trigger for testing
 def process_mock_email(job_id: str, item_name: str, price: float):
-    """
-    Manually process a mock email for testing purposes.
-    Simulates receiving a quotation email with a specific price.
-    """
+    """Manually process a mock email for testing purposes."""
     print(f"[MockEmail] Processing mock email for {job_id}")
 
     success = mark_quote_received(
@@ -667,52 +567,108 @@ def process_mock_email(job_id: str, item_name: str, price: float):
     return success
 
 
-def test_imap_connection():
-    """Test IMAP connection and list recent emails."""
-    print("[Test] Testing IMAP connection...")
-    print(f"[Test] Server: {IMAP_SERVER}:{IMAP_PORT}")
-    print(f"[Test] Email: {config.SMTP_EMAIL}")
+def test_graph_connection():
+    """Test Microsoft Graph API connection, list recent emails, and test attachment download."""
+    print("=" * 60)
+    print("Microsoft Graph Email Monitor - Connection Test")
+    print("=" * 60)
+    print(f"Mailbox: {config.MS_GRAPH_SENDER_EMAIL}")
+    print(f"Tenant:  {config.MS_GRAPH_TENANT_ID}")
+    print(f"Client:  {config.MS_GRAPH_CLIENT_ID}")
+    print()
 
     monitor = EmailMonitor()
 
-    if not monitor._connect_imap():
-        print("[Test] Failed to connect to IMAP")
+    # Step 1: Authenticate
+    print("[1/3] Authenticating with Microsoft Graph API...")
+    token = monitor._get_access_token()
+    if not token:
+        print("FAILED: Could not get access token.")
+        print("Check MS_GRAPH_TENANT_ID, MS_GRAPH_CLIENT_ID, MS_GRAPH_CLIENT_SECRET in .env")
+        print("Ensure the app registration has Mail.Read and Mail.ReadWrite permissions (Application type).")
         return False
 
-    print("[Test] IMAP connection successful!")
+    print("OK: Authentication successful.")
+    print()
+
+    # Step 2: List recent emails
+    print("[2/3] Fetching recent emails...")
+    url = (
+        f"{GRAPH_API_BASE}/users/{monitor.mailbox}/messages"
+        f"?$select=id,subject,from,hasAttachments,receivedDateTime"
+        f"&$top=10"
+        f"&$orderby=receivedDateTime desc"
+    )
 
     try:
-        if not monitor.imap_connection:
-            return False
+        resp = requests.get(url, headers=monitor._graph_headers(), timeout=30)
+        resp.raise_for_status()
+        messages = resp.json().get("value", [])
+        print(f"OK: Found {len(messages)} recent emails.")
+        print()
 
-        # Select inbox
-        monitor.imap_connection.select("INBOX")
+        attachment_msg_id = None
+        for i, msg in enumerate(messages):
+            from_email = msg.get("from", {}).get("emailAddress", {}).get("address", "?")
+            subject = msg.get("subject", "(no subject)")
+            has_att = msg.get("hasAttachments", False)
+            received = msg.get("receivedDateTime", "")[:19]
+            att_marker = " [ATTACHMENTS]" if has_att else ""
 
-        # Get recent emails
-        status, messages = monitor.imap_connection.search(None, "ALL")
+            print(f"  {i+1}. {received} | From: {from_email}")
+            print(f"     Subject: {subject}{att_marker}")
 
-        if status == "OK":
-            email_ids = messages[0].split()
-            recent_ids = email_ids[-5:] if len(email_ids) > 5 else email_ids
+            if has_att and not attachment_msg_id:
+                attachment_msg_id = msg["id"]
 
-            print(f"[Test] Found {len(email_ids)} total emails. Showing last {len(recent_ids)}:")
+        print()
 
-            for email_id in reversed(recent_ids):
-                message_id = email_id.decode() if isinstance(email_id, bytes) else str(email_id)
-                status, msg_data = monitor.imap_connection.fetch(message_id, "(RFC822.HEADER)")
-                if status == "OK" and msg_data and msg_data[0]:
-                    header = email.message_from_bytes(cast(bytes, msg_data[0][1]))
-                    subject = monitor._decode_header(header["Subject"])[:50]
-                    from_addr = monitor._decode_header(header["From"])[:40]
-                    print(f"  - From: {from_addr}... | Subject: {subject}...")
-
-        monitor._disconnect_imap()
-        return True
-
-    except Exception as e:
-        print(f"[Test] Error: {e}")
-        monitor._disconnect_imap()
+    except requests.exceptions.HTTPError as e:
+        print(f"FAILED: {e}")
+        if e.response is not None:
+            print(f"Response: {e.response.text[:500]}")
         return False
+    except Exception as e:
+        print(f"FAILED: {e}")
+        return False
+
+    # Step 3: Test attachment download
+    print("[3/3] Testing attachment download...")
+    if not attachment_msg_id:
+        print("SKIPPED: No emails with attachments found in recent 10 emails.")
+        print("Send an email with a PDF attachment to test this feature.")
+    else:
+        print(f"Downloading attachments from message...")
+        pdf_paths = monitor._download_attachments(attachment_msg_id)
+
+        # Also check for non-PDF attachments
+        att_url = f"{GRAPH_API_BASE}/users/{monitor.mailbox}/messages/{attachment_msg_id}/attachments"
+        att_resp = requests.get(att_url, headers=monitor._graph_headers(), timeout=30)
+        att_resp.raise_for_status()
+        all_attachments = att_resp.json().get("value", [])
+
+        print(f"  Total attachments: {len(all_attachments)}")
+        for att in all_attachments:
+            name = att.get("name", "?")
+            size = att.get("size", 0)
+            ctype = att.get("contentType", "?")
+            print(f"    - {name} ({ctype}, {size} bytes)")
+
+        if pdf_paths:
+            print(f"  Downloaded {len(pdf_paths)} PDF file(s):")
+            for p in pdf_paths:
+                fsize = os.path.getsize(p) if os.path.exists(p) else 0
+                print(f"    - {p} ({fsize} bytes)")
+            print("OK: Attachment download working.")
+        else:
+            print("  No PDF attachments found (other types present but skipped).")
+            print("OK: Attachment API working (no PDFs to download).")
+
+    print()
+    print("=" * 60)
+    print("Test complete.")
+    print("=" * 60)
+    return True
 
 
 def check_for_quotation_emails():
@@ -721,34 +677,29 @@ def check_for_quotation_emails():
 
     monitor = EmailMonitor()
 
-    if not monitor._connect_imap():
-        print("[Check] Failed to connect to IMAP")
+    if not monitor._get_access_token():
+        print("[Check] Failed to authenticate with Graph API")
         return False
 
-    print("[Check] Connected to IMAP. Checking for quotation emails...")
+    print("[Check] Authenticated. Checking for quotation emails...")
 
     try:
         monitor._check_for_emails()
-        monitor._disconnect_imap()
         print("[Check] Done.")
         return True
     except Exception as e:
         print(f"[Check] Error: {e}")
-        monitor._disconnect_imap()
         return False
 
 
 if __name__ == "__main__":
-    import sys
-
     if len(sys.argv) > 1:
         cmd = sys.argv[1].lower()
         if cmd == "test":
-            test_imap_connection()
+            test_graph_connection()
         elif cmd == "check":
             check_for_quotation_emails()
         elif cmd == "run":
-            # Run the monitor continuously
             print("[Monitor] Starting email monitor...")
             monitor = get_email_monitor()
             monitor.start()
@@ -760,9 +711,8 @@ if __name__ == "__main__":
                 monitor.stop()
         else:
             print("Usage: python email_monitor.py [test|check|run]")
-            print("  test  - Test IMAP connection and show recent emails")
+            print("  test  - Test Graph API connection, list emails, test attachment download")
             print("  check - Run a single check for quotation emails")
             print("  run   - Start continuous monitoring")
     else:
-        # Run test by default
-        test_imap_connection()
+        test_graph_connection()

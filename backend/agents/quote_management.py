@@ -5,12 +5,20 @@ Handles manual quote entry, quote request resending, and quote cancellations.
 """
 
 import json
+import os
 from langchain_core.messages import AIMessage
 from core.state import AgentState
+from core import config
 from utils import tools
 from utils.llm import llm
 from utils.prompts import QUOTE_MANAGEMENT_AGENT_SYSTEM_PROMPT, QUOTE_MANAGEMENT_EXTRACTION_PROMPT
 from utils.langfuse_tracing import trace_agent
+
+
+def _get_generated_file_path(job_id: str):
+    """Return the costing sheet file path if it exists on disk."""
+    file_path = os.path.join(config.TEMP_DOWNLOADS_DIR, f"costing_{job_id}.xlsx")
+    return file_path if os.path.exists(file_path) else None
 
 
 def _extract_quote_parameters(user_message: str, state: AgentState) -> dict:
@@ -159,6 +167,7 @@ def quote_management_node(state: AgentState):
                     "last_mentioned_job_id": pending.get("job_id", job_id),
                     "last_action": operation,
                     "pending_disambiguation": None,
+                    "generated_file": _get_generated_file_path(pending.get("job_id", job_id)),
                 }
             else:
                 response_msg = (
@@ -236,24 +245,199 @@ def quote_management_node(state: AgentState):
 
     elif operation == "resend_quote":
         item_name = params.get("item_identifier")
+        resend_all = params.get("resend_all", False)
 
-        if not item_name:
-            response_msg = "Please specify which item's quote request to resend."
-        else:
-            result = tools.resend_quote_request(
-                job_id=job_id,
-                item_name=item_name
-            )
+        # Check if user is responding to a disambiguation prompt
+        pending = state.get("pending_disambiguation")
+        if pending and pending.get("operation") == "resend_quote":
+            selection = user_message.strip().lower()
+            items = pending.get("items", [])
 
-            if result.get("success"):
-                response_msg = (
-                    f"✅ Quote request resent for job **{job_id}**\n\n"
-                    f"- Item: {result.get('item_name')}\n"
-                    f"- Vendor: {result.get('vendor_email')}\n\n"
-                    f"The vendor should receive the email shortly."
+            # Handle "all" — resend all items from the list
+            if selection in ("all", "resend all", "all of them", "everything"):
+                sent = []
+                failed = []
+                resend_job = pending.get("job_id", job_id)
+                for pq in items:
+                    result = tools.resend_quote_request(
+                        job_id=resend_job,
+                        item_name=pq["item_name"]
+                    )
+                    if result.get("success"):
+                        sent.append(f"- {result.get('item_name')} → {result.get('vendor_email')}")
+                    else:
+                        failed.append(f"- {pq['item_name']}: {result.get('error', 'Unknown error')}")
+
+                response_msg = f"Resent **{len(sent)}** quote request(s) for job **{resend_job}**:\n\n"
+                response_msg += "\n".join(sent)
+                if failed:
+                    response_msg += f"\n\n❌ Failed to resend {len(failed)} item(s):\n" + "\n".join(failed)
+                else:
+                    response_msg += "\n\nAll vendors should receive the emails shortly."
+                return {
+                    "messages": [AIMessage(content=response_msg)],
+                    "last_mentioned_job_id": resend_job,
+                    "last_action": operation,
+                    "pending_disambiguation": None,
+                }
+
+            selected_item = None
+
+            # Try numeric selection (1, 2, 3...)
+            if selection.isdigit():
+                idx = int(selection) - 1
+                if 0 <= idx < len(items):
+                    selected_item = items[idx]
+
+            # Try name match
+            if not selected_item:
+                for item in items:
+                    if selection in item["item_name"].lower():
+                        selected_item = item
+                        break
+
+            if selected_item:
+                result = tools.resend_quote_request(
+                    job_id=pending.get("job_id", job_id),
+                    item_name=selected_item["item_name"]
                 )
+                if result.get("success"):
+                    response_msg = (
+                        f"✅ Quote request resent for job **{pending.get('job_id', job_id)}**\n\n"
+                        f"- Item: {result.get('item_name')}\n"
+                        f"- Vendor: {result.get('vendor_email')}\n\n"
+                        f"The vendor should receive the email shortly."
+                    )
+                else:
+                    response_msg = f"❌ Failed to resend: {result.get('error', 'Unknown error')}"
+                return {
+                    "messages": [AIMessage(content=response_msg)],
+                    "last_mentioned_job_id": pending.get("job_id", job_id),
+                    "last_action": operation,
+                    "pending_disambiguation": None,
+                }
             else:
-                response_msg = f"❌ Failed to resend quote request: {result.get('error', 'Unknown error')}"
+                response_msg = (
+                    f"Please select a valid item number (1-{len(items)}) from the list above."
+                )
+                return {
+                    "messages": [AIMessage(content=response_msg)],
+                    "last_mentioned_job_id": pending.get("job_id", job_id),
+                    "pending_disambiguation": pending,
+                }
+
+        # Handle "resend all" — resend every pending quote for this job
+        if resend_all:
+            pending_quotes = tools.get_pending_quote_requests(job_id)
+            if not pending_quotes:
+                response_msg = f"There are no pending quote requests for job **{job_id}**."
+            else:
+                sent = []
+                failed = []
+                for pq in pending_quotes:
+                    result = tools.resend_quote_request(
+                        job_id=job_id,
+                        item_name=pq["item_name"]
+                    )
+                    if result.get("success"):
+                        sent.append(f"- {result.get('item_name')} → {result.get('vendor_email')}")
+                    else:
+                        failed.append(f"- {pq['item_name']}: {result.get('error', 'Unknown error')}")
+
+                response_msg = f"Resent **{len(sent)}** quote request(s) for job **{job_id}**:\n\n"
+                response_msg += "\n".join(sent)
+                if failed:
+                    response_msg += f"\n\n❌ Failed to resend {len(failed)} item(s):\n" + "\n".join(failed)
+                else:
+                    response_msg += "\n\nAll vendors should receive the emails shortly."
+
+        # No item specified — show pending quotes and let user pick
+        elif not item_name:
+            pending_quotes = tools.get_pending_quote_requests(job_id)
+            if not pending_quotes:
+                response_msg = f"There are no pending quote requests for job **{job_id}**."
+            else:
+                options = "\n".join([
+                    f"  {i+1}. **{pq['item_name']}** (Vendor: {pq.get('vendor_email', 'N/A')})"
+                    for i, pq in enumerate(pending_quotes)
+                ])
+                response_msg = (
+                    f"Here are the **{len(pending_quotes)} pending quote(s)** for job **{job_id}**:\n\n"
+                    f"{options}\n\n"
+                    f"Which item would you like to resend? Reply with the **number**, or say **'all'** to resend all."
+                )
+                return {
+                    "messages": [AIMessage(content=response_msg)],
+                    "last_mentioned_job_id": job_id,
+                    "pending_disambiguation": {
+                        "items": pending_quotes,
+                        "job_id": job_id,
+                        "operation": "resend_quote",
+                    },
+                }
+
+        # Specific item — use disambiguation like enter_quote
+        else:
+            match_result = tools.find_matching_line_items(job_id, item_name)
+
+            if match_result["match"] == "multiple":
+                # Filter to only pending_quote items
+                pending_items = [
+                    item for item in match_result["items"]
+                    if item.get("price_status") == "pending_quote"
+                ]
+                if not pending_items:
+                    response_msg = f"No pending quote items matching '{item_name}' found in job **{job_id}**."
+                elif len(pending_items) == 1:
+                    result = tools.resend_quote_request(
+                        job_id=job_id,
+                        item_name=pending_items[0]["item_name"]
+                    )
+                    if result.get("success"):
+                        response_msg = (
+                            f"✅ Quote request resent for job **{job_id}**\n\n"
+                            f"- Item: {result.get('item_name')}\n"
+                            f"- Vendor: {result.get('vendor_email')}\n\n"
+                            f"The vendor should receive the email shortly."
+                        )
+                    else:
+                        response_msg = f"❌ Failed to resend: {result.get('error', 'Unknown error')}"
+                else:
+                    options = "\n".join([
+                        f"  {i+1}. **{item['item_name']}** (Status: {item.get('price_status', 'unknown')})"
+                        for i, item in enumerate(pending_items)
+                    ])
+                    response_msg = (
+                        f"I found **{len(pending_items)} pending items** matching '{item_name}' "
+                        f"in job **{job_id}**:\n\n{options}\n\n"
+                        f"Which item should I resend the quote request for? Reply with the item number."
+                    )
+                    return {
+                        "messages": [AIMessage(content=response_msg)],
+                        "last_mentioned_job_id": job_id,
+                        "pending_disambiguation": {
+                            "items": pending_items,
+                            "job_id": job_id,
+                            "operation": "resend_quote",
+                        },
+                    }
+            elif match_result["match"] == "exact":
+                item = match_result["items"][0]
+                result = tools.resend_quote_request(
+                    job_id=job_id,
+                    item_name=item["item_name"]
+                )
+                if result.get("success"):
+                    response_msg = (
+                        f"✅ Quote request resent for job **{job_id}**\n\n"
+                        f"- Item: {result.get('item_name')}\n"
+                        f"- Vendor: {result.get('vendor_email')}\n\n"
+                        f"The vendor should receive the email shortly."
+                    )
+                else:
+                    response_msg = f"❌ Failed to resend: {result.get('error', 'Unknown error')}"
+            else:
+                response_msg = f"❌ No item matching '{item_name}' found in job **{job_id}**."
 
     elif operation == "cancel_quote":
         item_name = params.get("item_identifier")
@@ -287,4 +471,5 @@ def quote_management_node(state: AgentState):
         "last_mentioned_job_id": job_id,
         "last_action": operation,
         "pending_disambiguation": None,
+        "generated_file": _get_generated_file_path(job_id),
     }

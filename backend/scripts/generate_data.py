@@ -46,7 +46,7 @@ CATEGORIES = {
     }
 }
 
-def generate_products(n=1000):
+""" def generate_products(n=1000):
     products = []
     used_ids = set()
     
@@ -78,7 +78,7 @@ def generate_products(n=1000):
             "category": category,
             "embedding": embedding
         })
-    return products
+    return products """
 
 def update_vendor_emails():
     vendor_data = {}
@@ -167,6 +167,16 @@ def main():
         session.query(Product).delete()
         inventory = json.load(open("Products.json","r"))
         inventory = inventory["value"]
+        descriptions = []
+        for q in inventory:
+            text = q["ProductDescription"].strip().replace("\n","")
+            if len(text) != 0:
+                descriptions.append(text)
+            else:
+                descriptions.append("empty")
+        print("Generating embeddings")
+        description_embeddings = batch_embed(descriptions)
+        print("Generated embeddings")
         for i in inventory:
             if len(i["ReleasedProducts"]) == 0:
                 print("here")
@@ -175,7 +185,9 @@ def main():
                 obj = Product(
                     item_number = i["ProductNumber"],
                     unit_cost = (i["ReleasedProducts"][0]["UnitCost"] ),#,i["ReleasedProducts"][1]["UnitCost"]),
-                    vendor_email = "vinod.ihava@gulfcraftinc.com"
+                    vendor_email = "vinod.ihava@gulfcraftinc.com",
+                    description = i["ProductDescription"],
+                    embedding = description_embeddings[inventory.index(i)]
                 )
                 session.add(obj)
 

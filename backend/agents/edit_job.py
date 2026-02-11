@@ -7,13 +7,21 @@ Includes product search when adding items and disambiguation for multiple matche
 """
 
 import json
+import os
 import re
 from langchain_core.messages import AIMessage
 from core.state import AgentState
+from core import config
 from utils import tools
 from utils.llm import llm
 from utils.prompts import EDIT_JOB_AGENT_SYSTEM_PROMPT, EDIT_JOB_EXTRACTION_PROMPT
 from utils.langfuse_tracing import trace_agent
+
+
+def _get_generated_file_path(job_id: str):
+    """Return the costing sheet file path if it exists on disk."""
+    file_path = os.path.join(config.TEMP_DOWNLOADS_DIR, f"costing_{job_id}.xlsx")
+    return file_path if os.path.exists(file_path) else None
 
 
 def _extract_edit_parameters(user_message: str, state: AgentState) -> dict:
@@ -124,6 +132,7 @@ def _handle_disambiguation_response(user_message: str, pending: dict, job_id: st
             "last_mentioned_job_id": job_id,
             "last_action": "add_item",
             "pending_disambiguation": None,
+            "generated_file": _get_generated_file_path(job_id),
         }
 
     elif disambiguation_type == "remove_item":
@@ -146,6 +155,7 @@ def _handle_disambiguation_response(user_message: str, pending: dict, job_id: st
             "last_mentioned_job_id": job_id,
             "last_action": "remove_item",
             "pending_disambiguation": None,
+            "generated_file": _get_generated_file_path(job_id),
         }
 
     elif disambiguation_type == "update_item":
@@ -188,6 +198,7 @@ def _handle_disambiguation_response(user_message: str, pending: dict, job_id: st
             "last_mentioned_job_id": job_id,
             "last_action": "update_item",
             "pending_disambiguation": None,
+            "generated_file": _get_generated_file_path(job_id),
         }
 
     # Unknown disambiguation type
@@ -233,6 +244,7 @@ def _handle_add_item_custom_confirm(pending: dict, job_id: str) -> dict:
         "last_mentioned_job_id": job_id,
         "last_action": "add_item",
         "pending_disambiguation": None,
+        "generated_file": _get_generated_file_path(job_id),
     }
 
 
@@ -350,20 +362,18 @@ def edit_job_node(state: AgentState):
 
                 else:
                     # Multiple matches — ask user to pick
+                    def _truncate_name(name, max_len=80):
+                        return name[:max_len] + "..." if len(name) > max_len else name
+
                     options = "\n".join([
-                        f"  {i+1}. **{p['item_name']}** (Code: {p.get('item_code') or 'N/A'}, "
+                        f"  {i+1}. **{_truncate_name(p['item_name'])}** (Code: {p.get('item_code') or 'N/A'}, "
                         f"Price: {p.get('unit_cost') or 'N/A'} AED)"
                         for i, p in enumerate(results[:10])
                     ])
 
-                    note = ""
-                    code_only = [p for p in results if not p.get("has_name", True)]
-                    if code_only:
-                        note = "\n\n💡 **Note:** Some products only have item codes without descriptive names."
-
                     response_msg = (
                         f"I found **{len(results)} products** matching '**{item_name}**':\n\n"
-                        f"{options}{note}\n\n"
+                        f"{options}\n\n"
                         f"Which product would you like to add to job **{job_id}**? "
                         f"Reply with the number (1-{min(len(results), 10)})."
                     )
@@ -552,8 +562,44 @@ def edit_job_node(state: AgentState):
             else:
                 response_msg = f"❌ Failed to update description: {result.get('error', 'Unknown error')}"
 
+    elif operation == "search_product":
+        search_query = params.get("search_query", "")
+        if not search_query:
+            response_msg = "Please provide a description to search for (e.g., 'hydraulic pump', 'marine engine')."
+        else:
+            search_result = tools.search_products_for_agent(search_query)
+
+            if search_result.get("found"):
+                results = search_result["results"]
+                options = "\n".join([
+                    f"  {i+1}. **{p['item_name']}** (Code: {p.get('item_code') or 'N/A'}, "
+                    f"Price: {p.get('unit_cost') or 'N/A'} AED)"
+                    for i, p in enumerate(results[:10])
+                ])
+
+                response_msg = (
+                    f"🔍 Found **{len(results)} products** matching '**{search_query}**':\n\n"
+                    f"{options}\n\n"
+                    f"To add one of these to job **{job_id}**, reply with the number (1-{min(len(results), 10)})."
+                )
+
+                return {
+                    "messages": [AIMessage(content=response_msg)],
+                    "last_mentioned_job_id": job_id,
+                    "pending_disambiguation": {
+                        "agent": "edit_job",
+                        "disambiguation_type": "add_item_search",
+                        "items": results[:10],
+                        "job_id": job_id,
+                        "quantity": 1,
+                        "unit_price": None,
+                    },
+                }
+            else:
+                response_msg = f"No products found matching '**{search_query}**'. Try a different description or item code."
+
     else:
-        response_msg = f"I don't understand the operation '{operation}'. I can help with: add_item, remove_item, update_item, or update_description."
+        response_msg = f"I don't understand the operation '{operation}'. I can help with: add_item, remove_item, update_item, update_description, or search_product."
 
     # Update state with context
     return {
@@ -561,4 +607,5 @@ def edit_job_node(state: AgentState):
         "last_mentioned_job_id": job_id,
         "last_action": operation,
         "pending_disambiguation": None,
+        "generated_file": _get_generated_file_path(job_id),
     }

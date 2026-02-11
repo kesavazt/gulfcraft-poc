@@ -26,14 +26,16 @@ Routing Logic:
 
 4. **Job Status Queries**:
    - Job status, updates, details, pending items → 'StatusAgent'
-   - Examples: "show my jobs", "status of COST-XXX", "pending quotes"
+   - Which items are awaiting quotes, how long waiting, which vendors → 'StatusAgent'
+   - Examples: "show my jobs", "status of COST-XXX", "pending quotes", "which items are awaiting quotes", "how long have they been waiting", "which vendors were sent quotes"
 
 5. **Edit Job Operations** (route to EditJobAgent):
    - Adding items: "add 50 meters of cable", "add hydraulic pump to this job"
    - Removing items: "remove the anchor winch", "delete item 3"
    - Updating items: "change quantity to 10", "update pump price to 850"
    - Changing descriptions: "change job description to..."
-   - Examples: "add item", "remove", "update", "change quantity", "modify"
+   - Searching products to add: "search for marine engine", "find hydraulic pump", "look up anchor winch"
+   - Examples: "add item", "remove", "update", "change quantity", "modify", "search for product", "find product"
 
 6. **Quote Management** (route to QuoteManagementAgent):
    - Manual quote entry: "vendor quoted 1200 AED", "enter price of 850"
@@ -53,7 +55,8 @@ Routing Logic:
    - Price history: "what did we pay for X", "price history for item"
    - Averages: "average price for", "typical cost of"
    - Comparisons: "is 1500 AED good price", "compare this quote"
-   - Examples: "price history", "average price", "is X a good price"
+   - Product pricing search: "how much does X cost", "pricing for marine engine", "search product pricing"
+   - Examples: "price history", "average price", "is X a good price", "how much does", "pricing for"
 
 9. **Explanations** (route to ExplainerAgent):
    - Why questions: "why is this pending", "why this price"
@@ -72,8 +75,9 @@ IMPORTANT:
 - Each new quotation request starts fresh with SearchAgent
 - Use conversation context to infer job_id when not explicitly stated
 - If the user replies with just a number (e.g., "1", "2", "3") and the previous assistant message listed items to choose from (disambiguation):
-  - If the previous message was about editing/adding/removing/updating items in a job, route to 'EditJobAgent'
+  - If the previous message was about editing/adding/removing/updating items in a job or searching for products to add, route to 'EditJobAgent'
   - If the previous message was about entering vendor quotes or quote management, route to 'QuoteManagementAgent'
+  - If the previous message was about product pricing, price search, or pricing intelligence, route to 'PricingAdvisorAgent'
 - If the user replies "yes"/"no" and the previous assistant message asked about adding a custom item or confirming an edit operation, route to 'EditJobAgent'"""
 
 
@@ -183,7 +187,7 @@ Conversation context:
 - Available context: {context}
 
 Determine:
-1. Operation type: add_item, remove_item, update_item, update_description
+1. Operation type: add_item, remove_item, update_item, update_description, search_product
 2. job_id (use context if not explicitly stated)
 3. Relevant parameters based on operation type
 
@@ -191,6 +195,11 @@ For add_item: item_name, item_code, quantity, unit_price (numeric value only, no
 For remove_item: item_identifier (name or id)
 For update_item: item_identifier, new_quantity, new_unit_price (numeric value only, no currency symbols), new_item_name, new_item_code
 For update_description: new_description
+For search_product: search_query (the product description to search for)
+
+Use "search_product" when the user says things like "search for", "find product", "look up", "search products for..."
+Use "add_item" when the user wants to add an item directly (the system will search automatically by description).
+The item_name field can be a descriptive search like "hydraulic pump" or "marine engine" — the system supports semantic search by description.
 
 IMPORTANT: If the user message is just a number (like "1", "2", "3") or a simple confirmation ("yes", "no"), return an empty JSON object {{}}.
 These are disambiguation responses, NOT new operations.
@@ -235,9 +244,14 @@ Context:
 Determine:
 1. Operation: enter_quote, resend_quote, cancel_quote
 2. job_id
-3. item_identifier (name or id)
+3. item_identifier (name or id of a specific item, if mentioned)
 4. quoted_price (numeric value only, no currency symbols or text e.g. 1200 not "1200 AED")
 5. vendor_email (optional)
+6. resend_all (boolean, true if user wants to resend ALL pending quotes, e.g. "resend all quotes", "resend everything")
+
+If the user says "resend quotes" without specifying an item, set item_identifier to null (we'll show them a list).
+If the user says "resend all" or "resend all quotes", set resend_all to true.
+If the user's message is just a number (e.g. "1", "2"), it may be a selection from a previous list - still set operation to the contextually appropriate one.
 
 Return JSON with extracted parameters."""
 
@@ -319,9 +333,17 @@ PRICING_ADVISOR_EXTRACTION_PROMPT = """Extract pricing query from user message:
 User message: "{user_message}"
 
 Determine:
-1. Query type: price_history, average_price, price_comparison
+1. Query type: price_history, average_price, price_comparison, product_search
 2. item_code or item_name
 3. For comparisons: current_price (numeric value only, no currency symbols or text e.g. 1500 not "1500 AED")
+4. For product_search: search_query (the product description to search for)
+
+Use "product_search" when the user wants to search/find products by description (e.g. "search for hydraulic pump", "find marine engine pricing", "how much does a bilge pump cost", "look up anchor winch").
+Use "price_history" when asking about past prices for a known item code.
+Use "average_price" when asking for average/typical pricing.
+Use "price_comparison" when comparing a specific price against history.
+
+If the user provides a descriptive name (not an item code), set item_name to that description. The system can resolve names to item codes via search.
 
 Return JSON with extracted parameters."""
 

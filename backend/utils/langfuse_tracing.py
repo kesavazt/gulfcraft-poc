@@ -31,6 +31,7 @@ from core import config
 
 # Global Langfuse client
 _langfuse_client = None
+_langfuse_callback = None
 
 
 def _get_langfuse_client() -> Optional[Langfuse]:
@@ -55,6 +56,55 @@ def _get_langfuse_client() -> Optional[Langfuse]:
             return None
 
     return _langfuse_client
+
+
+def get_langfuse_callback():
+    """
+    Get a Langfuse CallbackHandler for LangChain integration.
+
+    This enables automatic capture of model name, token usage, and cost
+    for every LLM call made through LangChain. The callback handler
+    integrates with the existing OTel-based trace context, so generations
+    nest under the current span automatically.
+    """
+    global _langfuse_callback
+
+    if _langfuse_callback is not None:
+        return _langfuse_callback
+
+    if not LANGFUSE_AVAILABLE:
+        return None
+
+    if not all([config.LANGFUSE_PUBLIC_KEY, config.LANGFUSE_SECRET_KEY]):
+        return None
+
+    try:
+        from langfuse.callback import CallbackHandler
+        _langfuse_callback = CallbackHandler(
+            public_key=config.LANGFUSE_PUBLIC_KEY,
+            secret_key=config.LANGFUSE_SECRET_KEY,
+            host=config.LANGFUSE_HOST,
+        )
+        print("[Langfuse] LangChain CallbackHandler initialized for cost tracking")
+        return _langfuse_callback
+    except ImportError:
+        pass
+
+    try:
+        from langfuse.langchain import CallbackHandler
+        _langfuse_callback = CallbackHandler(
+            public_key=config.LANGFUSE_PUBLIC_KEY,
+            secret_key=config.LANGFUSE_SECRET_KEY,
+            host=config.LANGFUSE_HOST,
+        )
+        print("[Langfuse] LangChain CallbackHandler initialized for cost tracking")
+        return _langfuse_callback
+    except ImportError:
+        print("[Langfuse] CallbackHandler not available - install langfuse with LangChain support")
+        return None
+    except Exception as e:
+        print(f"[Langfuse] CallbackHandler initialization error: {e}")
+        return None
 
 
 def _ensure_hex_trace_id(trace_id: str) -> str:

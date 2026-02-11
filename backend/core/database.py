@@ -40,6 +40,15 @@ class Product(Base):
     item_number = Column(String)
     unit_cost = Column(Integer)
     vendor_email = Column(String)
+    embedding = Column(Vector(1536))
+    description = Column(String)
+    tsv = Column(
+    TSVECTOR,
+    Computed(
+        "to_tsvector('english', description)",
+        persisted=True
+    )
+    )
 
 class QuotationLines(Base):
     __tablename__ = "quotation_lines"
@@ -144,6 +153,9 @@ class CostingLineItem(Base):
 
     # Price source indicator
     price_source = Column(String, nullable=True)  # 'products', 'quotation', 'manual', 'pending', 'labour'
+
+    # Per-item profit margin (multiplier, e.g. 1.5 = 50% margin). Defaults to config.PROFIT_MARGIN when None.
+    margin = Column(Float, nullable=True)
 
     costing_request = relationship("CostingRequest", back_populates="line_items")
 
