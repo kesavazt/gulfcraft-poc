@@ -148,13 +148,9 @@ class EmailMonitor:
         print(f"[EmailMonitor] {len(pending_requests)} pending quote requests in DB")
 
         # Fetch unread emails with quotation-related subjects
-        # OData filter: unread AND (subject contains keywords)
-        filter_parts = [
-            "contains(subject, 'Price Quotation Request')",
-            "contains(subject, 'JOB-')",
-            "contains(subject, 'COST-')",
-        ]
-        odata_filter = f"isRead eq false and ({' or '.join(filter_parts)})"
+        # Note: Graph API has limitations on complex contains() filters
+        # Simplify to just fetch unread emails and filter in Python
+        odata_filter = "isRead eq false"
 
         url = (
             f"{GRAPH_API_BASE}/users/{self.mailbox}/messages"
@@ -175,8 +171,16 @@ class EmailMonitor:
                 resp = requests.get(url, headers=self._graph_headers(), timeout=30)
 
             resp.raise_for_status()
-            messages = resp.json().get("value", [])
-            print(f"[EmailMonitor] Found {len(messages)} unread quotation-related emails")
+            all_messages = resp.json().get("value", [])
+
+            # Filter messages by subject keywords (Python-side filtering)
+            keywords = ['Price Quotation Request', 'JOB-', 'COST-']
+            messages = [
+                msg for msg in all_messages
+                if any(keyword in msg.get('subject', '') for keyword in keywords)
+            ]
+
+            print(f"[EmailMonitor] Found {len(messages)} unread quotation-related emails (from {len(all_messages)} total unread)")
 
             for msg in messages:
                 try:
