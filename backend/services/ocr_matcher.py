@@ -97,9 +97,22 @@ def _get_pending_items(job_id: str) -> List[Dict[str, Any]]:
 
         # Build a comprehensive list from pending requests
         for req in pending_requests:
+            line_item_id = req.costing_line_item_id
+            # Resolve missing costing_line_item_id by looking up the CostingLineItem by name
+            if line_item_id is None and costing_req:
+                li = session.query(CostingLineItem).filter(
+                    CostingLineItem.costing_request_id == costing_req.id,
+                    CostingLineItem.item_name == req.item_name
+                ).first()
+                if li:
+                    line_item_id = li.id
+                    # Backfill the missing link for future lookups
+                    req.costing_line_item_id = li.id
+                    session.commit()
+
             result.append({
                 "pending_request_id": req.id,
-                "line_item_id": req.costing_line_item_id,
+                "line_item_id": line_item_id,
                 "item_name": req.item_name,
                 "vendor_email": req.vendor_email
             })
@@ -291,6 +304,7 @@ def _parse_match_response(
                 "ocr_item": ocr_item,
                 "matched_line_item_id": pending_item["line_item_id"],
                 "pending_request_id": pending_item.get("pending_request_id"),
+                "pending_item_name": pending_item.get("item_name"),
                 "confidence": confidence,
                 "match_reason": reason
             })
@@ -349,6 +363,7 @@ def _fallback_simple_match(
                 "ocr_item": ocr_item,
                 "matched_line_item_id": best_match["line_item_id"],
                 "pending_request_id": best_match.get("pending_request_id"),
+                "pending_item_name": best_match.get("item_name"),
                 "confidence": best_score,
                 "match_reason": "Substring match (fallback)"
             })

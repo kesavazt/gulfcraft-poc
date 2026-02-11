@@ -707,8 +707,15 @@ Gulf Craft Costing Team
         ).first()
 
         if costing_req:
+            # Find the associated line item to link it
+            line_item = session.query(CostingLineItem).filter(
+                CostingLineItem.costing_request_id == costing_req.id,
+                CostingLineItem.item_name == item_name
+            ).first()
+
             pending_req = PendingQuoteRequest(
                 costing_request_id=costing_req.id,
+                costing_line_item_id=line_item.id if line_item else None,
                 job_id=job_id,
                 item_name=item_name,
                 vendor_email=vendor_email,

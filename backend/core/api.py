@@ -834,16 +834,24 @@ async def upload_quote_pdf(
         match_details = []
         for match in matches:
             ocr_item = match["ocr_item"]
+            line_item_id = match["matched_line_item_id"]
+
+            # Skip matches with no valid line_item_id (would cause 422 on confirm)
+            if line_item_id is None:
+                print(f"[UploadQuote] Skipping match with no line_item_id: {ocr_item.get('item_name')}")
+                continue
+
             detail = {
-                "line_item_id": match["matched_line_item_id"],
+                "line_item_id": line_item_id,
                 "pending_request_id": match.get("pending_request_id"),
                 "ocr_item_name": ocr_item.get("item_name"),
                 "ocr_unit_price": ocr_item.get("unit_price"),
                 "ocr_quantity": ocr_item.get("quantity"),
                 "confidence": match["confidence"],
                 "match_reason": match.get("match_reason", ""),
+                "pending_item_name": match.get("pending_item_name", ""),
             }
-            li = db.query(CostingLineItem).filter(CostingLineItem.id == detail["line_item_id"]).first()
+            li = db.query(CostingLineItem).filter(CostingLineItem.id == line_item_id).first()
             if li:
                 detail["pending_item_name"] = li.item_name
                 detail["current_price"] = li.unit_price
@@ -879,7 +887,7 @@ async def upload_quote_pdf(
 
 class QuoteMatchItem(BaseModel):
     line_item_id: int
-    price: float
+    price: Optional[float] = None
     apply: bool = True
 
 class QuoteMatchConfirmation(BaseModel):
@@ -904,6 +912,10 @@ def confirm_quote_matches(
 
     for match in confirmation.matches:
         if not match.apply:
+            skipped.append(match.line_item_id)
+            continue
+        if match.price is None:
+            print(f"[ConfirmQuote] Skipping line_item_id {match.line_item_id}: no price provided")
             skipped.append(match.line_item_id)
             continue
         success = tools.mark_quote_received_by_id(
