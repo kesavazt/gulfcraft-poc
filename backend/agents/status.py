@@ -446,7 +446,7 @@ def status_node(state: AgentState):
             response = "You don't have any costing jobs yet. Would you like to create one? Just describe the work you need done and provide your boat model!"
         return {
             "messages": [AIMessage(content=response)],
-            "last_mentioned_job_id": job_id if job_id else None,
+            "last_mentioned_job_id": job_id if job_id else state.get("last_mentioned_job_id"),
         }
 
     # Build structured context
@@ -468,5 +468,5 @@ def status_node(state: AgentState):
 
     return {
         "messages": [AIMessage(content=response)],
-        "last_mentioned_job_id": job_id if job_id else None,
+        "last_mentioned_job_id": job_id if job_id else state.get("last_mentioned_job_id"),
     }

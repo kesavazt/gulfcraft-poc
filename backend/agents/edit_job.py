@@ -311,7 +311,28 @@ def edit_job_node(state: AgentState):
 
         # Handle job selection method (list jobs or enter ID)
         if disambiguation_type == "job_selection_method":
-            user_lower = user_message.strip().lower()
+            user_message_stripped = user_message.strip()
+            user_lower = user_message_stripped.lower()
+
+            # Check if user directly provided a job ID (COST-XXXXXXXX pattern)
+            job_id_match = re.match(r'^(COST-[A-Z0-9]{8})$', user_message_stripped.upper())
+            if job_id_match:
+                job_id = job_id_match.group(1)
+                return {
+                    "messages": [AIMessage(content=
+                        f"Great! Working with job **{job_id}**.\n\n"
+                        f"What would you like to do?\n"
+                        f"1. Edit existing line items (quantity, price, etc.)\n"
+                        f"2. Search for a product to add to this job"
+                    )],
+                    "last_mentioned_job_id": job_id,
+                    "pending_disambiguation": {
+                        "agent": "edit_job",
+                        "disambiguation_type": "action_selection",
+                        "job_id": job_id,
+                    },
+                }
+
             if "list" in user_lower or "show" in user_lower or "1" in user_lower:
                 # Show list of recent jobs
                 recent_jobs = tools.list_recent_jobs(limit=15)
@@ -676,6 +697,27 @@ def edit_job_node(state: AgentState):
 
         print(f"[DEBUG edit_job_node] Calling _handle_disambiguation_response")
         return _handle_disambiguation_response(user_message, pending, job_id)
+
+    # Check if user directly provided a job ID (when not in pending state)
+    if not pending:
+        job_id_match = re.match(r'^(COST-[A-Z0-9]{8})$', user_message.strip().upper())
+        if job_id_match:
+            job_id = job_id_match.group(1)
+            print(f"[DEBUG edit_job_node] Direct job ID detected: {job_id}")
+            return {
+                "messages": [AIMessage(content=
+                    f"Great! Working with job **{job_id}**.\n\n"
+                    f"What would you like to do?\n"
+                    f"1. Edit existing line items (quantity, price, etc.)\n"
+                    f"2. Search for a product to add to this job"
+                )],
+                "last_mentioned_job_id": job_id,
+                "pending_disambiguation": {
+                    "agent": "edit_job",
+                    "disambiguation_type": "action_selection",
+                    "job_id": job_id,
+                },
+            }
 
     # Extract parameters (if not already extracted above)
     if pending is None or not pending:
