@@ -77,7 +77,7 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
     if expires_delta:
         expire = datetime.utcnow() + expires_delta
     else:
-        expire = datetime.utcnow() + timedelta(minutes=15)
+        expire = datetime.utcnow() + timedelta(minutes=config.ACCESS_TOKEN_EXPIRE_MINUTES)
     to_encode.update({"exp": expire})
     encoded_jwt = jwt.encode(to_encode, config.SECRET_KEY, algorithm=config.ALGORITHM)
     return encoded_jwt
@@ -190,7 +190,8 @@ def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depend
     user = db.query(User).filter(User.username == form_data.username).first()
     if not user or not bcrypt.checkpw(form_data.password.encode('utf-8'), user.hashed_password.encode('utf-8')):
         raise HTTPException(status_code=400, detail="Incorrect username or password")
-    access_token = create_access_token(data={"sub": user.username})
+    access_token_expires = timedelta(minutes=config.ACCESS_TOKEN_EXPIRE_MINUTES)
+    access_token = create_access_token(data={"sub": user.username}, expires_delta=access_token_expires)
     return {"access_token": access_token, "token_type": "bearer"}
 
 @app.get("/users/me")
@@ -278,15 +279,14 @@ def get_requests(current_user: User = Depends(get_current_user), db: Session = D
     else:
         requests = db.query(CostingRequest).filter(CostingRequest.user_id == current_user.id).all()
 
-    # Calculate price on-the-fly for jobs that don't have it set
+    # Always recalculate price based on current line items
     for req in requests:
-        if req.price is None:
-            total_price = sum(
-                (item.unit_price or 0) * (item.quantity or 1)
-                for item in req.line_items
-                if item.unit_price is not None
-            )
-            req.price = total_price if total_price > 0 else None
+        total_price = sum(
+            (item.unit_price or 0) * (item.quantity or 1)
+            for item in req.line_items
+            if item.unit_price is not None
+        )
+        req.price = total_price if total_price > 0 else None
 
     db.commit()
     return requests

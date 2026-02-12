@@ -63,7 +63,7 @@ EMBEDDING_MODEL = "text-embedding-3-small"
 # --- Security ---
 SECRET_KEY = os.getenv("SECRET_KEY", "supersecretkey")
 ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "30"))
+ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "60"))
 
 # --- Templates ---
 COSTING_TEMPLATE_PATH = os.getenv("COSTING_TEMPLATE_PATH", "templates/costing_template.xlsx")
