@@ -595,8 +595,8 @@ def list_costing_sheets(current_user: User = Depends(get_current_user)):
 
 
 @app.get("/costing-sheets/by-job/{job_id}")
-def download_costing_sheet_by_job(job_id: str, current_user: User = Depends(get_current_user)):
-    """Download a costing sheet by job ID."""
+def download_costing_sheet_by_job(job_id: str, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Download a costing sheet by job ID. Regenerates if not found."""
     # Prevent directory traversal
     if ".." in job_id or "/" in job_id or "\\" in job_id:
         raise HTTPException(status_code=400, detail="Invalid job ID")
@@ -605,8 +605,47 @@ def download_costing_sheet_by_job(job_id: str, current_user: User = Depends(get_
     filename = f"costing_{job_id}.xlsx"
     file_path = os.path.join(config.TEMP_DOWNLOADS_DIR, filename)
 
+    # If file doesn't exist, regenerate it
     if not os.path.exists(file_path):
-        raise HTTPException(status_code=404, detail=f"Costing sheet for job {job_id} not found")
+        # Get the costing request from database
+        costing_req = db.query(CostingRequest).filter(CostingRequest.job_id == job_id).first()
+
+        if not costing_req:
+            raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+
+        # Check user has access to this job
+        if current_user.role != "admin" and costing_req.user_id != current_user.id:
+            raise HTTPException(status_code=403, detail="Access denied")
+
+        # Get line items for this job
+        line_items = db.query(CostingLineItem).filter(
+            CostingLineItem.costing_request_id == costing_req.id
+        ).all()
+
+        # Convert to the format expected by create_costing_sheet_with_items
+        items_data = []
+        for item in line_items:
+            items_data.append({
+                "item_name": item.item_name,
+                "item_code": item.item_code or "",
+                "quantity": item.quantity or 1,
+                "unit_price": item.unit_price,
+                "vendor_email": item.vendor_email,
+                "price_status": item.price_status or "resolved",
+                "is_labour": item.item_name and "labour" in item.item_name.lower(),
+            })
+
+        # Regenerate the costing sheet
+        try:
+            generated_filename = tools.create_costing_sheet_with_items(
+                job_id=job_id,
+                items=items_data,
+                quotation_id=costing_req.quotation_id or "N/A",
+                description=costing_req.description or "Costing Request"
+            )
+            file_path = os.path.join(config.TEMP_DOWNLOADS_DIR, generated_filename)
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to regenerate costing sheet: {str(e)}")
 
     return FileResponse(
         file_path,
@@ -617,15 +656,61 @@ def download_costing_sheet_by_job(job_id: str, current_user: User = Depends(get_
 
 
 @app.get("/costing-sheets/{filename}")
-def download_costing_sheet(filename: str, current_user: User = Depends(get_current_user)):
-    """Download a specific costing sheet."""
+def download_costing_sheet(filename: str, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Download a specific costing sheet. Regenerates if not found."""
     # Prevent directory traversal
     if ".." in filename or "/" in filename or "\\" in filename:
         raise HTTPException(status_code=400, detail="Invalid filename")
 
     file_path = os.path.join(config.TEMP_DOWNLOADS_DIR, filename)
+
+    # If file doesn't exist, try to regenerate it if it follows the costing_{job_id}.xlsx pattern
     if not os.path.exists(file_path):
-        raise HTTPException(status_code=404, detail="Costing sheet not found")
+        # Extract job_id from filename (pattern: costing_{job_id}.xlsx)
+        if filename.startswith("costing_") and filename.endswith(".xlsx"):
+            job_id = filename[8:-5]  # Remove "costing_" prefix and ".xlsx" suffix
+
+            # Get the costing request from database
+            costing_req = db.query(CostingRequest).filter(CostingRequest.job_id == job_id).first()
+
+            if not costing_req:
+                raise HTTPException(status_code=404, detail="Costing sheet not found")
+
+            # Check user has access to this job
+            if current_user.role != "admin" and costing_req.user_id != current_user.id:
+                raise HTTPException(status_code=403, detail="Access denied")
+
+            # Get line items for this job
+            line_items = db.query(CostingLineItem).filter(
+                CostingLineItem.costing_request_id == costing_req.id
+            ).all()
+
+            # Convert to the format expected by create_costing_sheet_with_items
+            items_data = []
+            for item in line_items:
+                items_data.append({
+                    "item_name": item.item_name,
+                    "item_code": item.item_code or "",
+                    "quantity": item.quantity or 1,
+                    "unit_price": item.unit_price,
+                    "vendor_email": item.vendor_email,
+                    "price_status": item.price_status or "resolved",
+                    "is_labour": item.item_name and "labour" in item.item_name.lower(),
+                })
+
+            # Regenerate the costing sheet
+            try:
+                generated_filename = tools.create_costing_sheet_with_items(
+                    job_id=job_id,
+                    items=items_data,
+                    quotation_id=costing_req.quotation_id or "N/A",
+                    description=costing_req.description or "Costing Request"
+                )
+                file_path = os.path.join(config.TEMP_DOWNLOADS_DIR, generated_filename)
+            except Exception as e:
+                raise HTTPException(status_code=500, detail=f"Failed to regenerate costing sheet: {str(e)}")
+        else:
+            raise HTTPException(status_code=404, detail="Costing sheet not found")
 
     return FileResponse(
         file_path,
