@@ -99,40 +99,43 @@ def _handle_disambiguation_response(user_message: str, pending: dict, job_id: st
 
     disambiguation_type = pending.get("disambiguation_type")
 
+    # Legacy "add_item_search" - redirect to new flow for quantity and confirmation
     if disambiguation_type == "add_item_search":
-        # User selected a product from search results to add
-        product = selected_item
-        quantity = pending.get("quantity", 1)
-        unit_price = _sanitize_price(pending.get("unit_price")) or product.get("unit_cost")
+        items = pending.get("items", [])
+        selection = user_message.strip()
 
-        result = tools.add_line_item_to_job(
-            job_id=job_id,
-            item_name=product.get("item_name", ""),
-            item_code=product.get("item_code", ""),
-            quantity=quantity,
-            unit_price=unit_price,
-            vendor_email=product.get("vendor_email")
-        )
+        selected_item = None
+        if selection.isdigit():
+            idx = int(selection) - 1
+            if 0 <= idx < len(items):
+                selected_item = items[idx]
 
-        if result.get("success"):
-            price_display = f"{result.get('unit_price')} AED" if result.get('unit_price') else "Pending quote"
-            response_msg = (
-                f"✅ Added **{product.get('item_name')}** to job **{job_id}**\n\n"
-                f"- Item Code: {product.get('item_code') or 'N/A'}\n"
-                f"- Quantity: {quantity}\n"
-                f"- Unit Price: {price_display}\n"
-                f"- Status: {result.get('price_status')}\n\n"
-                f"The costing sheet has been regenerated."
-            )
-        else:
-            response_msg = f"❌ Failed to add item: {result.get('error', 'Unknown error')}"
+        if not selected_item:
+            for item in items:
+                if str(item.get("id", "")) == selection:
+                    selected_item = item
+                    break
 
+        if not selected_item:
+            return {
+                "messages": [AIMessage(content=f"Please select a valid item number (1-{len(items)}) from the list above.")],
+                "last_mentioned_job_id": job_id,
+                "pending_disambiguation": pending,
+            }
+
+        # Now ask for quantity instead of adding directly
         return {
-            "messages": [AIMessage(content=response_msg)],
+            "messages": [AIMessage(content=
+                f"How many units of **{selected_item['item_name']}** would you like to add?\n"
+                f"(Enter a number, or type 'cancel' to go back)"
+            )],
             "last_mentioned_job_id": job_id,
-            "last_action": "add_item",
-            "pending_disambiguation": None,
-            "generated_file": _get_generated_file_path(job_id),
+            "pending_disambiguation": {
+                "agent": "edit_job",
+                "disambiguation_type": "quantity_input",
+                "job_id": job_id,
+                "selected_product": selected_item,
+            },
         }
 
     elif disambiguation_type == "remove_item":
@@ -252,15 +255,356 @@ def _handle_add_item_custom_confirm(pending: dict, job_id: str) -> dict:
 def edit_job_node(state: AgentState):
     """
     Handles job editing operations based on user requests.
-    Supports disambiguation for multiple matches and product search for adding items.
+    Supports interactive job selection, product search, quantity input, and confirmation.
     """
     user_message = state["messages"][-1].content if state.get("messages") else ""
 
-    # Check if disambiguation is pending
+    # Check if disambiguation/interactive flow is pending
     pending = state.get("pending_disambiguation")
     if pending and pending.get("agent") == "edit_job":
         disambiguation_type = pending.get("disambiguation_type")
         job_id = pending.get("job_id")
+
+        # Handle job selection method (list jobs or enter ID)
+        if disambiguation_type == "job_selection_method":
+            user_lower = user_message.strip().lower()
+            if "list" in user_lower or "show" in user_lower or "1" in user_lower:
+                # Show list of recent jobs
+                recent_jobs = tools.list_recent_jobs(limit=15)
+                if not recent_jobs:
+                    return {
+                        "messages": [AIMessage(content="No jobs found in the system.")],
+                        "pending_disambiguation": None,
+                    }
+
+                job_list = "\n".join([
+                    f"  {i+1}. **{job['job_id']}** - {job['description']}\n"
+                    f"     Status: {job['status']} | Items: {job['line_items_count']} | Created: {job['created_at']}"
+                    for i, job in enumerate(recent_jobs)
+                ])
+
+                return {
+                    "messages": [AIMessage(content=
+                        f"📋 **Recent Jobs:**\n\n{job_list}\n\n"
+                        f"Which job would you like to edit? Reply with the number (1-{len(recent_jobs)}) or job ID."
+                    )],
+                    "pending_disambiguation": {
+                        "agent": "edit_job",
+                        "disambiguation_type": "job_list_selection",
+                        "jobs": recent_jobs,
+                    },
+                }
+            elif "enter" in user_lower or "know" in user_lower or "2" in user_lower or user_lower.startswith("cost-"):
+                # User wants to enter job ID or has entered it
+                # Try to extract job ID from message
+                if user_lower.startswith("cost-"):
+                    job_id = user_message.strip().upper()
+                    return {
+                        "messages": [AIMessage(content=
+                            f"Great! Working with job **{job_id}**.\n\n"
+                            f"What would you like to do?\n"
+                            f"1. Edit existing line items (quantity, price, etc.)\n"
+                            f"2. Search for a product to add to this job"
+                        )],
+                        "last_mentioned_job_id": job_id,
+                        "pending_disambiguation": {
+                            "agent": "edit_job",
+                            "disambiguation_type": "action_selection",
+                            "job_id": job_id,
+                        },
+                    }
+                else:
+                    return {
+                        "messages": [AIMessage(content="Please enter the job ID (e.g., COST-00123456):")],
+                        "pending_disambiguation": {
+                            "agent": "edit_job",
+                            "disambiguation_type": "job_id_input",
+                        },
+                    }
+            else:
+                return {
+                    "messages": [AIMessage(content=
+                        "Please choose one of these options:\n"
+                        "1. Show me a list of recent jobs\n"
+                        "2. I know the job ID"
+                    )],
+                    "pending_disambiguation": pending,
+                }
+
+        # Handle job ID input
+        elif disambiguation_type == "job_id_input":
+            job_id = user_message.strip().upper()
+            if not job_id.startswith("COST-"):
+                return {
+                    "messages": [AIMessage(content="Invalid job ID format. Job IDs should start with 'COST-'. Please try again:")],
+                    "pending_disambiguation": pending,
+                }
+
+            return {
+                "messages": [AIMessage(content=
+                    f"Great! Working with job **{job_id}**.\n\n"
+                    f"What would you like to do?\n"
+                    f"1. Edit existing line items (quantity, price, etc.)\n"
+                    f"2. Search for a product to add to this job"
+                )],
+                "last_mentioned_job_id": job_id,
+                "pending_disambiguation": {
+                    "agent": "edit_job",
+                    "disambiguation_type": "action_selection",
+                    "job_id": job_id,
+                },
+            }
+
+        # Handle job selection from list
+        elif disambiguation_type == "job_list_selection":
+            jobs = pending.get("jobs", [])
+            selection = user_message.strip()
+
+            # Try numeric selection
+            selected_job = None
+            if selection.isdigit():
+                idx = int(selection) - 1
+                if 0 <= idx < len(jobs):
+                    selected_job = jobs[idx]
+
+            # Try job ID match
+            if not selected_job:
+                for job in jobs:
+                    if job["job_id"].upper() == selection.upper():
+                        selected_job = job
+                        break
+
+            if not selected_job:
+                return {
+                    "messages": [AIMessage(content=f"Please select a valid job number (1-{len(jobs)}) or enter a valid job ID.")],
+                    "pending_disambiguation": pending,
+                }
+
+            job_id = selected_job["job_id"]
+            return {
+                "messages": [AIMessage(content=
+                    f"Great! Working with job **{job_id}**.\n\n"
+                    f"What would you like to do?\n"
+                    f"1. Edit existing line items (quantity, price, etc.)\n"
+                    f"2. Search for a product to add to this job"
+                )],
+                "last_mentioned_job_id": job_id,
+                "pending_disambiguation": {
+                    "agent": "edit_job",
+                    "disambiguation_type": "action_selection",
+                    "job_id": job_id,
+                },
+            }
+
+        # Handle action selection (edit or add)
+        elif disambiguation_type == "action_selection":
+            user_lower = user_message.strip().lower()
+            if "1" in user_lower or "edit" in user_lower:
+                # User wants to edit existing items - switch to regular edit flow
+                return {
+                    "messages": [AIMessage(content=
+                        f"Which item would you like to update? Please provide the item name, code, or tell me what to change.\n\n"
+                        f"Examples:\n"
+                        f"- 'Update the hydraulic pump quantity to 5'\n"
+                        f"- 'Change cable price to 850 AED'\n"
+                        f"- 'Remove the anchor winch'"
+                    )],
+                    "last_mentioned_job_id": job_id,
+                    "pending_disambiguation": None,  # Clear to allow normal operation extraction
+                }
+            elif "2" in user_lower or "search" in user_lower or "add" in user_lower:
+                # User wants to search for products
+                return {
+                    "messages": [AIMessage(content="What product would you like to search for? Enter a description or item code:")],
+                    "last_mentioned_job_id": job_id,
+                    "pending_disambiguation": {
+                        "agent": "edit_job",
+                        "disambiguation_type": "product_search_query",
+                        "job_id": job_id,
+                    },
+                }
+            else:
+                return {
+                    "messages": [AIMessage(content=
+                        "Please choose one of these options:\n"
+                        "1. Edit existing line items\n"
+                        "2. Search for a product to add"
+                    )],
+                    "last_mentioned_job_id": job_id,
+                    "pending_disambiguation": pending,
+                }
+
+        # Handle product search query input
+        elif disambiguation_type == "product_search_query":
+            search_query = user_message.strip()
+            search_result = tools.search_products_for_agent(search_query)
+
+            if search_result.get("found"):
+                results = search_result["results"][:10]
+
+                def _truncate_name(name, max_len=80):
+                    return name[:max_len] + "..." if len(name) > max_len else name
+
+                options = "\n".join([
+                    f"  {i+1}. **{_truncate_name(p['item_name'])}**\n"
+                    f"     Code: {p.get('item_code') or 'N/A'} | Price: {p.get('unit_cost') or 'N/A'} AED"
+                    for i, p in enumerate(results)
+                ])
+
+                return {
+                    "messages": [AIMessage(content=
+                        f"🔍 Found **{len(results)} products** matching '**{search_query}**':\n\n"
+                        f"{options}\n\n"
+                        f"Which product would you like to add? Reply with the number (1-{len(results)})."
+                    )],
+                    "last_mentioned_job_id": job_id,
+                    "pending_disambiguation": {
+                        "agent": "edit_job",
+                        "disambiguation_type": "product_selection",
+                        "items": results,
+                        "job_id": job_id,
+                    },
+                }
+            else:
+                return {
+                    "messages": [AIMessage(content=
+                        f"⚠️ No products found matching '**{search_query}**'.\n\n"
+                        f"💡 Try searching by item code if you have one, or try a different description.\n\n"
+                        f"You can also type 'cancel' to go back."
+                    )],
+                    "last_mentioned_job_id": job_id,
+                    "pending_disambiguation": pending,
+                }
+
+        # Handle product selection from search results
+        elif disambiguation_type == "product_selection":
+            items = pending.get("items", [])
+            selection = user_message.strip()
+
+            if selection.lower() in ("cancel", "back", "exit"):
+                return {
+                    "messages": [AIMessage(content="Cancelled. What else can I help you with?")],
+                    "last_mentioned_job_id": job_id,
+                    "pending_disambiguation": None,
+                }
+
+            selected_item = None
+            if selection.isdigit():
+                idx = int(selection) - 1
+                if 0 <= idx < len(items):
+                    selected_item = items[idx]
+
+            if not selected_item:
+                return {
+                    "messages": [AIMessage(content=f"Please select a valid product number (1-{len(items)}).")],
+                    "pending_disambiguation": pending,
+                }
+
+            # Ask for quantity
+            return {
+                "messages": [AIMessage(content=
+                    f"How many units of **{selected_item['item_name']}** would you like to add?\n"
+                    f"(Enter a number, or type 'cancel' to go back)"
+                )],
+                "last_mentioned_job_id": job_id,
+                "pending_disambiguation": {
+                    "agent": "edit_job",
+                    "disambiguation_type": "quantity_input",
+                    "job_id": job_id,
+                    "selected_product": selected_item,
+                },
+            }
+
+        # Handle quantity input
+        elif disambiguation_type == "quantity_input":
+            if user_message.strip().lower() in ("cancel", "back", "exit"):
+                return {
+                    "messages": [AIMessage(content="Cancelled. What else can I help you with?")],
+                    "last_mentioned_job_id": job_id,
+                    "pending_disambiguation": None,
+                }
+
+            try:
+                quantity = int(user_message.strip())
+                if quantity <= 0:
+                    return {
+                        "messages": [AIMessage(content="Please enter a positive number for quantity:")],
+                        "pending_disambiguation": pending,
+                    }
+
+                selected_product = pending.get("selected_product")
+                unit_price = selected_product.get("unit_cost")
+                price_display = f"{unit_price} AED" if unit_price else "Pending quote"
+
+                # Ask for confirmation
+                return {
+                    "messages": [AIMessage(content=
+                        f"Please confirm you want to add:\n\n"
+                        f"**Item:** {selected_product['item_name']}\n"
+                        f"**Item Code:** {selected_product.get('item_code') or 'N/A'}\n"
+                        f"**Quantity:** {quantity}\n"
+                        f"**Unit Price:** {price_display}\n\n"
+                        f"Reply **yes** to confirm or **no** to cancel."
+                    )],
+                    "last_mentioned_job_id": job_id,
+                    "pending_disambiguation": {
+                        "agent": "edit_job",
+                        "disambiguation_type": "add_confirmation",
+                        "job_id": job_id,
+                        "selected_product": selected_product,
+                        "quantity": quantity,
+                    },
+                }
+
+            except ValueError:
+                return {
+                    "messages": [AIMessage(content="Please enter a valid number for quantity:")],
+                    "pending_disambiguation": pending,
+                }
+
+        # Handle add confirmation
+        elif disambiguation_type == "add_confirmation":
+            user_lower = user_message.strip().lower()
+            if user_lower in ("yes", "y", "ok", "sure", "confirm", "go ahead", "add it", "proceed"):
+                selected_product = pending.get("selected_product")
+                quantity = pending.get("quantity", 1)
+
+                result = tools.add_line_item_to_job(
+                    job_id=job_id,
+                    item_name=selected_product.get("item_name", ""),
+                    item_code=selected_product.get("item_code", ""),
+                    quantity=quantity,
+                    unit_price=selected_product.get("unit_cost"),
+                    vendor_email=selected_product.get("vendor_email")
+                )
+
+                if result.get("success"):
+                    price_display = f"{result.get('unit_price')} AED" if result.get('unit_price') else "Pending quote"
+                    response_msg = (
+                        f"✅ Added **{selected_product.get('item_name')}** to job **{job_id}**\n\n"
+                        f"- Item Code: {selected_product.get('item_code') or 'N/A'}\n"
+                        f"- Quantity: {quantity}\n"
+                        f"- Unit Price: {price_display}\n"
+                        f"- Status: {result.get('price_status')}\n\n"
+                        f"The costing sheet has been regenerated.\n\n"
+                        f"Would you like to add another item? (yes/no)"
+                    )
+                else:
+                    response_msg = f"❌ Failed to add item: {result.get('error', 'Unknown error')}"
+
+                return {
+                    "messages": [AIMessage(content=response_msg)],
+                    "last_mentioned_job_id": job_id,
+                    "last_action": "add_item",
+                    "pending_disambiguation": None,
+                    "generated_file": _get_generated_file_path(job_id),
+                }
+            else:
+                return {
+                    "messages": [AIMessage(content="Cancelled. What else can I help you with?")],
+                    "last_mentioned_job_id": job_id,
+                    "pending_disambiguation": None,
+                }
 
         # Check if user wants to confirm adding a custom item
         if disambiguation_type == "add_item_not_found":
@@ -274,7 +618,7 @@ def edit_job_node(state: AgentState):
                     "pending_disambiguation": None,
                 }
 
-        # Handle item selection from disambiguation list
+        # Handle item selection from disambiguation list (for edit/remove operations)
         # First check if the LLM extracted a new operation — if so, don't treat as disambiguation
         params = _extract_edit_parameters(user_message, state)
         if params and params.get("operation"):
@@ -287,7 +631,25 @@ def edit_job_node(state: AgentState):
     if pending is None or not pending:
         params = _extract_edit_parameters(user_message, state)
 
+    # Check if this is a generic "edit job" request without details
     if not params or not params.get("operation"):
+        # Check if user is saying they want to edit a job
+        user_lower = user_message.lower()
+        if any(phrase in user_lower for phrase in ["edit job", "edit a job", "modify job", "change job", "update job"]):
+            # Start interactive flow
+            return {
+                "messages": [AIMessage(content=
+                    "I can help you edit a costing job!\n\n"
+                    "Would you like to:\n"
+                    "1. See a list of recent jobs\n"
+                    "2. Enter a job ID directly"
+                )],
+                "pending_disambiguation": {
+                    "agent": "edit_job",
+                    "disambiguation_type": "job_selection_method",
+                },
+            }
+
         return {
             "messages": [AIMessage(content=
                 "I can help you edit a costing job! Please specify:\n"
@@ -296,7 +658,8 @@ def edit_job_node(state: AgentState):
                 "Examples:\n"
                 "- 'Add 50 meters of cable to job COST-00123'\n"
                 "- 'Remove the anchor winch from this job'\n"
-                "- 'Change the hydraulic pump price to 850 AED'"
+                "- 'Change the hydraulic pump price to 850 AED'\n\n"
+                "Or simply say 'I want to edit a job' for a guided experience."
             )]
         }
 
@@ -361,21 +724,20 @@ def edit_job_node(state: AgentState):
                         response_msg = f"❌ Failed to add item: {result.get('error', 'Unknown error')}"
 
                 else:
-                    # Multiple matches — ask user to pick
+                    # Multiple matches — ask user to pick (will then ask for quantity and confirmation)
                     def _truncate_name(name, max_len=80):
                         return name[:max_len] + "..." if len(name) > max_len else name
 
                     options = "\n".join([
-                        f"  {i+1}. **{_truncate_name(p['item_name'])}** (Code: {p.get('item_code') or 'N/A'}, "
-                        f"Price: {p.get('unit_cost') or 'N/A'} AED)"
+                        f"  {i+1}. **{_truncate_name(p['item_name'])}**\n"
+                        f"     Code: {p.get('item_code') or 'N/A'} | Price: {p.get('unit_cost') or 'N/A'} AED"
                         for i, p in enumerate(results[:10])
                     ])
 
                     response_msg = (
                         f"I found **{len(results)} products** matching '**{item_name}**':\n\n"
                         f"{options}\n\n"
-                        f"Which product would you like to add to job **{job_id}**? "
-                        f"Reply with the number (1-{min(len(results), 10)})."
+                        f"Which product would you like to add? Reply with the number (1-{min(len(results), 10)})."
                     )
 
                     return {
@@ -383,11 +745,9 @@ def edit_job_node(state: AgentState):
                         "last_mentioned_job_id": job_id,
                         "pending_disambiguation": {
                             "agent": "edit_job",
-                            "disambiguation_type": "add_item_search",
+                            "disambiguation_type": "product_selection",
                             "items": results[:10],
                             "job_id": job_id,
-                            "quantity": quantity,
-                            "unit_price": unit_price,
                         },
                     }
 
@@ -580,7 +940,7 @@ def edit_job_node(state: AgentState):
                 response_msg = (
                     f"🔍 Found **{len(results)} products** matching '**{search_query}**':\n\n"
                     f"{options}\n\n"
-                    f"To add one of these to job **{job_id}**, reply with the number (1-{min(len(results), 10)})."
+                    f"Which product would you like to add? Reply with the number (1-{min(len(results), 10)})."
                 )
 
                 return {
@@ -588,11 +948,9 @@ def edit_job_node(state: AgentState):
                     "last_mentioned_job_id": job_id,
                     "pending_disambiguation": {
                         "agent": "edit_job",
-                        "disambiguation_type": "add_item_search",
+                        "disambiguation_type": "product_selection",
                         "items": results[:10],
                         "job_id": job_id,
-                        "quantity": 1,
-                        "unit_price": None,
                     },
                 }
             else:

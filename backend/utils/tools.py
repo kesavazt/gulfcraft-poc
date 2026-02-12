@@ -956,6 +956,42 @@ def get_costing_job_statuses(user_id: int, job_id: Optional[str] = None) -> List
         session.close()
 
 
+def list_recent_jobs(user_id: int = None, limit: int = 10) -> List[Dict[str, Any]]:
+    """
+    List recent costing jobs for interactive selection.
+    Returns simplified job info suitable for agent display.
+    """
+    session = SessionLocal()
+    try:
+        query = session.query(CostingRequest)
+        if user_id:
+            query = query.filter(CostingRequest.user_id == user_id)
+
+        jobs = query.order_by(CostingRequest.created_at.desc()).limit(limit).all()
+
+        results = []
+        for job in jobs:
+            # Count line items
+            line_items_count = session.query(CostingLineItem).filter(
+                CostingLineItem.costing_request_id == job.id
+            ).count()
+
+            results.append({
+                "job_id": job.job_id,
+                "description": job.item_details[:100] + "..." if len(job.item_details) > 100 else job.item_details,
+                "status": job.status,
+                "line_items_count": line_items_count,
+                "created_at": job.created_at.strftime("%Y-%m-%d %H:%M") if job.created_at else "N/A"
+            })
+
+        return results
+    except Exception as e:
+        print(f"DB Error listing jobs: {e}")
+        return []
+    finally:
+        session.close()
+
+
 def mark_quote_received(
     job_id: str,
     item_name: str,

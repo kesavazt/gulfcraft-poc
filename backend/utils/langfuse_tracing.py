@@ -78,27 +78,49 @@ def get_langfuse_callback():
     if not all([config.LANGFUSE_PUBLIC_KEY, config.LANGFUSE_SECRET_KEY]):
         return None
 
-    try:
-        from langfuse.callback import CallbackHandler
-        _langfuse_callback = CallbackHandler(
-            public_key=config.LANGFUSE_PUBLIC_KEY,
-            secret_key=config.LANGFUSE_SECRET_KEY,
-            host=config.LANGFUSE_HOST,
-        )
-        print("[Langfuse] LangChain CallbackHandler initialized for cost tracking")
-        return _langfuse_callback
-    except ImportError:
-        pass
+    # Get the Langfuse client first
+    client = _get_langfuse_client()
+    if not client:
+        return None
 
     try:
+        # Try the callback module first (newer SDK versions)
+        from langfuse.callback import CallbackHandler
+        # In SDK v3.x, CallbackHandler can accept the client directly
+        try:
+            _langfuse_callback = CallbackHandler(client=client)
+            print("[Langfuse] LangChain CallbackHandler initialized for cost tracking (callback module)")
+            return _langfuse_callback
+        except TypeError:
+            # Fallback to environment variables if client parameter not supported
+            import os
+            os.environ["LANGFUSE_PUBLIC_KEY"] = config.LANGFUSE_PUBLIC_KEY
+            os.environ["LANGFUSE_SECRET_KEY"] = config.LANGFUSE_SECRET_KEY
+            os.environ["LANGFUSE_HOST"] = config.LANGFUSE_HOST
+            _langfuse_callback = CallbackHandler()
+            print("[Langfuse] LangChain CallbackHandler initialized for cost tracking (env vars)")
+            return _langfuse_callback
+    except ImportError:
+        pass
+    except Exception as e:
+        print(f"[Langfuse] CallbackHandler (callback module) initialization error: {e}")
+
+    try:
+        # Try the langchain module (older SDK versions)
         from langfuse.langchain import CallbackHandler
-        _langfuse_callback = CallbackHandler(
-            public_key=config.LANGFUSE_PUBLIC_KEY,
-            secret_key=config.LANGFUSE_SECRET_KEY,
-            host=config.LANGFUSE_HOST,
-        )
-        print("[Langfuse] LangChain CallbackHandler initialized for cost tracking")
-        return _langfuse_callback
+        try:
+            _langfuse_callback = CallbackHandler(client=client)
+            print("[Langfuse] LangChain CallbackHandler initialized for cost tracking (langchain module)")
+            return _langfuse_callback
+        except TypeError:
+            # Fallback to environment variables
+            import os
+            os.environ["LANGFUSE_PUBLIC_KEY"] = config.LANGFUSE_PUBLIC_KEY
+            os.environ["LANGFUSE_SECRET_KEY"] = config.LANGFUSE_SECRET_KEY
+            os.environ["LANGFUSE_HOST"] = config.LANGFUSE_HOST
+            _langfuse_callback = CallbackHandler()
+            print("[Langfuse] LangChain CallbackHandler initialized for cost tracking (env vars)")
+            return _langfuse_callback
     except ImportError:
         print("[Langfuse] CallbackHandler not available - install langfuse with LangChain support")
         return None

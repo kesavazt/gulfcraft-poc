@@ -1,11 +1,11 @@
 .env
 backend/temp_downloads
-backend/__pycache__
 backend/venv
 backend/*.json
 backend/.env
 frontend/package-lock.json
 __pycache__/
+.pytest_cache/
 *.log   
 *.md
 *.sh
