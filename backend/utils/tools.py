@@ -877,7 +877,17 @@ def save_costing_line_items(job_id: str, items: List[Dict[str, Any]]) -> bool:
             session.add(line_item)
 
         session.commit()
-        print(f"[CostingLineItems] Saved {len(items)} items for {job_id}")
+
+        # Calculate and update total price
+        total_price = sum(
+            (item.get("unit_price", 0) or 0) * (item.get("quantity", 1) or 1)
+            for item in items
+            if item.get("unit_price") is not None
+        )
+        costing_req.price = total_price
+        session.commit()
+
+        print(f"[CostingLineItems] Saved {len(items)} items for {job_id}, total price: {total_price}")
         return True
     except Exception as e:
         print(f"DB Error: {e}")
@@ -1107,6 +1117,22 @@ def mark_quote_received_by_id(
 
         session.commit()
 
+        # Recalculate and update total price for the job
+        costing_req = session.query(CostingRequest).filter(
+            CostingRequest.id == line_item.costing_request_id
+        ).first()
+        if costing_req:
+            all_items = session.query(CostingLineItem).filter(
+                CostingLineItem.costing_request_id == costing_req.id
+            ).all()
+            total_price = sum(
+                (item.unit_price or 0) * (item.quantity or 1)
+                for item in all_items
+                if item.unit_price is not None
+            )
+            costing_req.price = total_price
+            session.commit()
+
         print(f"[UpdatePrice] Updated line item {line_item_id} ({line_item.item_name}): {price}")
 
         # Regenerate costing sheet if job_id provided
@@ -1148,6 +1174,7 @@ def check_all_quotes_received(job_id: str) -> Dict[str, Any]:
                 session.commit()
 
                 # Recalculate selling price for SharePoint and mark as Ready
+                total_cost = 0
                 total_selling = 0
                 line_items = session.query(CostingLineItem).filter(
                     CostingLineItem.costing_request_id == costing_req.id
@@ -1155,7 +1182,12 @@ def check_all_quotes_received(job_id: str) -> Dict[str, Any]:
                 for item in line_items:
                     if item.unit_price is not None:
                         qty = item.quantity or 1
+                        total_cost += (item.unit_price * qty)
                         total_selling += (item.unit_price * qty * config.PROFIT_MARGIN)
+
+                # Update total price in costing request
+                costing_req.price = total_cost
+                session.commit()
 
                 # Log lifecycle event
                 log_job_ready(
@@ -1397,7 +1429,8 @@ def search_products_for_agent(query: str, limit: int = 10) -> Dict[str, Any]:
 
     # Determine if this is likely a description-based query
     # Use hybrid search for queries that look like descriptions (not just codes)
-    is_code_only = query.replace("-", "").replace("_", "").isalnum() and len(query) < 15
+    # Treat queries with colons, dashes, or underscores as codes (e.g., "GALL:118:H6461BP")
+    is_code_only = query.replace("-", "").replace("_", "").replace(":", "").isalnum() and len(query) < 25
     is_description_query = len(query) > 3 and not is_code_only
 
     session = SessionLocal()
@@ -2282,6 +2315,50 @@ def get_average_item_price(item_code: str, item_name: str = None) -> Dict[str, A
     except Exception as e:
         print(f"[AvgPrice] Error: {e}")
         return {"item_code": item_code, "error": str(e)}
+    finally:
+        session.close()
+
+
+@trace_tool
+def get_job_line_items(job_id: str) -> List[Dict[str, Any]]:
+    """
+    Get all line items for a specific job.
+
+    Returns:
+        List of dictionaries containing item details (id, item_name, item_code, quantity, unit_price, etc.)
+    """
+    session = SessionLocal()
+    try:
+        # Get the costing request
+        costing_req = session.query(CostingRequest).filter(
+            CostingRequest.job_id == job_id
+        ).first()
+
+        if not costing_req:
+            return []
+
+        # Get all line items
+        line_items = session.query(CostingLineItem).filter(
+            CostingLineItem.costing_request_id == costing_req.id
+        ).all()
+
+        result = []
+        for item in line_items:
+            result.append({
+                "id": item.id,
+                "item_name": item.item_name,
+                "item_code": item.item_code,
+                "quantity": item.quantity or 1,
+                "unit_price": float(item.unit_price) if item.unit_price else None,
+                "vendor_email": item.vendor_email,
+                "price_status": item.price_status,
+            })
+
+        return result
+
+    except Exception as e:
+        print(f"[GetJobLineItems] Error: {e}")
+        return []
     finally:
         session.close()
 

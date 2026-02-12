@@ -464,7 +464,47 @@ def edit_job_node(state: AgentState):
         # Handle action selection (edit or add)
         elif disambiguation_type == "action_selection":
             user_lower = user_message.strip().lower()
-            if "1" in user_lower or "edit" in user_lower:
+
+            # Check if user wants to view/list current items
+            if any(keyword in user_lower for keyword in ["show", "list", "view", "what", "display"]) and \
+               any(keyword in user_lower for keyword in ["item", "items", "job", "current"]):
+                # User wants to view current items in the job
+                job_items = tools.get_job_line_items(job_id)
+
+                if not job_items:
+                    response_msg = f"Job **{job_id}** has no items yet. Would you like to add some items?"
+                else:
+                    items_list = "\n".join([
+                        f"  {i+1}. **{item['item_name']}**\n"
+                        f"     Code: {item.get('item_code') or 'N/A'} | "
+                        f"Qty: {item.get('quantity', 1)} | "
+                        f"Price: {item.get('unit_price') or 'Pending quote'} AED | "
+                        f"Total: {(item.get('unit_price') or 0) * item.get('quantity', 1):.2f} AED"
+                        for i, item in enumerate(job_items)
+                    ])
+
+                    total_cost = sum(
+                        (item.get('unit_price') or 0) * item.get('quantity', 1)
+                        for item in job_items
+                    )
+
+                    response_msg = (
+                        f"📋 **Items in Job {job_id}:**\n\n"
+                        f"{items_list}\n\n"
+                        f"**Total:** {total_cost:.2f} AED\n\n"
+                        f"You can:\n"
+                        f"- Add more items by saying 'add [item name/code]'\n"
+                        f"- Update an item by saying 'update item [number] quantity to [X]'\n"
+                        f"- Remove an item by saying 'remove item [number]'"
+                    )
+
+                return {
+                    "messages": [AIMessage(content=response_msg)],
+                    "last_mentioned_job_id": job_id,
+                    "pending_disambiguation": None,
+                }
+
+            elif "1" in user_lower or "edit" in user_lower:
                 # User wants to edit existing items - switch to regular edit flow
                 return {
                     "messages": [AIMessage(content=
@@ -671,6 +711,40 @@ def edit_job_node(state: AgentState):
                     "pending_disambiguation": None,
                 }
 
+        # Handle standalone product search (no job context)
+        if disambiguation_type == "product_search_standalone":
+            search_query = user_message.strip()
+            search_result = tools.search_products_for_agent(search_query)
+
+            if search_result.get("found"):
+                results = search_result["results"][:10]
+                options = "\n".join([
+                    f"  {i+1}. **{p['item_name']}** (Code: {p.get('item_code') or 'N/A'}, "
+                    f"Price: {p.get('unit_cost') or 'N/A'} AED)"
+                    for i, p in enumerate(results)
+                ])
+
+                response_msg = (
+                    f"🔍 Found **{len(results)} products** matching '**{search_query}**':\n\n"
+                    f"{options}\n\n"
+                    f"These are the available products. To add any of these to a job, you can:\n"
+                    f"- Say 'add [product name/number] to job [job ID]'\n"
+                    f"- Or say 'edit a job' to start editing a specific job"
+                )
+            else:
+                response_msg = (
+                    f"⚠️ No products found matching '**{search_query}**'.\n\n"
+                    f"💡 Try:\n"
+                    f"- Searching by item code if you have one\n"
+                    f"- Using different keywords\n"
+                    f"- Asking 'search for [different term]'"
+                )
+
+            return {
+                "messages": [AIMessage(content=response_msg)],
+                "pending_disambiguation": None,
+            }
+
         # Check if user wants to confirm adding a custom item
         if disambiguation_type == "add_item_not_found":
             user_lower = user_message.strip().lower()
@@ -763,7 +837,8 @@ def edit_job_node(state: AgentState):
     job_id = params.get("job_id")
     operation = params.get("operation")
 
-    if not job_id:
+    # Allow search_product operation without a job_id (standalone search)
+    if not job_id and operation != "search_product":
         return {
             "messages": [AIMessage(content=
                 "I need to know which job to edit. Please provide a job ID (e.g., COST-00123456) "
@@ -778,6 +853,12 @@ def edit_job_node(state: AgentState):
         item_name = params.get("item_name")
         if not item_name:
             response_msg = "Please specify the item name or item code to add."
+            return {
+                "messages": [AIMessage(content=response_msg)],
+                "last_mentioned_job_id": job_id,
+                "last_action": operation,
+                "pending_disambiguation": None,
+            }
         else:
             # Search the product catalog first
             search_result = tools.search_products_for_agent(item_name)
@@ -785,6 +866,13 @@ def edit_job_node(state: AgentState):
             quantity = params.get("quantity", 1)
             unit_price = _sanitize_price(params.get("unit_price"))
             vendor_email = params.get("vendor_email")
+
+            # Determine if this looks like an item code (contains colons, dashes, specific patterns)
+            # vs a descriptive search (like "hydraulic pump")
+            search_term = item_code if item_code else item_name
+            looks_like_item_code = bool(re.search(r'[:_\-]', search_term)) or (
+                search_term.isupper() and len(search_term.split()) == 1
+            )
 
             # Also search by item_code if provided and different from item_name
             if item_code and item_code != item_name and not search_result.get("found"):
@@ -836,7 +924,89 @@ def edit_job_node(state: AgentState):
                         }
 
                 else:
-                    # Multiple matches — ask user to pick (will then ask for quantity and confirmation)
+                    # Multiple matches — check for exact match on item_code first
+                    exact_match = None
+                    search_term_upper = item_code.upper() if item_code else item_name.upper()
+
+                    for product in results:
+                        product_code = product.get("item_code", "").upper()
+                        product_name = product.get("item_name", "").upper()
+
+                        # Check for exact match on item code or item name
+                        if product_code == search_term_upper or product_name == search_term_upper:
+                            exact_match = product
+                            break
+
+                    if exact_match:
+                        # Found exact match - add it directly
+                        final_price = unit_price or exact_match.get("unit_cost")
+
+                        result = tools.add_line_item_to_job(
+                            job_id=job_id,
+                            item_name=exact_match.get("item_name", item_name),
+                            item_code=exact_match.get("item_code", item_code),
+                            quantity=quantity,
+                            unit_price=final_price,
+                            vendor_email=exact_match.get("vendor_email") or vendor_email
+                        )
+
+                        if result.get("success"):
+                            price_display = f"{result.get('unit_price')} AED" if result.get('unit_price') else "Pending quote"
+                            response_msg = (
+                                f"✅ Added **{exact_match.get('item_name')}** to job **{job_id}**\n\n"
+                                f"- Item Code: {exact_match.get('item_code') or 'N/A'}\n"
+                                f"- Quantity: {quantity}\n"
+                                f"- Unit Price: {price_display}\n"
+                                f"- Status: {result.get('price_status')}\n\n"
+                                f"The costing sheet has been regenerated."
+                            )
+
+                            return {
+                                "messages": [AIMessage(content=response_msg)],
+                                "last_mentioned_job_id": job_id,
+                                "last_action": "add_item",
+                                "pending_disambiguation": None,
+                                "generated_file": result.get("file_path"),
+                            }
+                        else:
+                            response_msg = f"❌ Failed to add item: {result.get('error', 'Unknown error')}"
+
+                            return {
+                                "messages": [AIMessage(content=response_msg)],
+                                "last_mentioned_job_id": job_id,
+                                "last_action": "add_item",
+                                "pending_disambiguation": None,
+                            }
+
+                    # No exact match found
+                    # If it looks like an item code (not a descriptive search), treat as "not found"
+                    if looks_like_item_code:
+                        response_msg = (
+                            f"⚠️ No product found with code **{search_term}**.\n\n"
+                            f"💡 **Tip:** The item code doesn't exist in our catalog. You can:\n"
+                            f"- Double-check the item code spelling\n"
+                            f"- Search by description instead (e.g., 'hydraulic pump')\n"
+                            f"- Add it as a custom item by confirming below\n\n"
+                            f"Would you like me to add '**{search_term}**' as a custom item to job **{job_id}** anyway? "
+                            f"Reply **yes** to confirm or provide a different item name/code."
+                        )
+
+                        return {
+                            "messages": [AIMessage(content=response_msg)],
+                            "last_mentioned_job_id": job_id,
+                            "pending_disambiguation": {
+                                "agent": "edit_job",
+                                "disambiguation_type": "add_item_not_found",
+                                "job_id": job_id,
+                                "item_name": item_name,
+                                "item_code": item_code,
+                                "quantity": quantity,
+                                "unit_price": unit_price,
+                                "vendor_email": vendor_email,
+                            },
+                        }
+
+                    # For descriptive searches, show fuzzy matches
                     def _truncate_name(name, max_len=80):
                         return name[:max_len] + "..." if len(name) > max_len else name
 
@@ -1137,7 +1307,30 @@ def edit_job_node(state: AgentState):
             }
 
     elif operation == "search_product":
-        search_query = params.get("search_query", "")
+        search_query = params.get("search_query", "").strip()
+
+        # Treat generic terms as empty search queries (user expressing intent, not actual search term)
+        generic_terms = ["product", "products", "item", "items", "thing", "things", "something"]
+        if search_query.lower() in generic_terms:
+            search_query = ""
+
+        # Allow standalone search without a job_id
+        if not job_id and not search_query:
+            # Start conversational search flow
+            return {
+                "messages": [AIMessage(content=
+                    "I can help you search for products in our catalog!\n\n"
+                    "What would you like to search for? You can search by:\n"
+                    "- Product name (e.g., 'hydraulic pump', 'marine engine')\n"
+                    "- Item code (e.g., 'HYD-1234')\n"
+                    "- Category or type (e.g., 'anchor', 'winch')"
+                )],
+                "pending_disambiguation": {
+                    "agent": "edit_job",
+                    "disambiguation_type": "product_search_standalone",
+                },
+            }
+
         if not search_query:
             response_msg = "Please provide a description to search for (e.g., 'hydraulic pump', 'marine engine')."
         else:
@@ -1151,27 +1344,69 @@ def edit_job_node(state: AgentState):
                     for i, p in enumerate(results[:10])
                 ])
 
-                response_msg = (
-                    f"🔍 Found **{len(results)} products** matching '**{search_query}**':\n\n"
-                    f"{options}\n\n"
-                    f"Which product would you like to add? Reply with the number (1-{min(len(results), 10)})."
-                )
+                # If we have a job_id, offer to add items to it
+                if job_id:
+                    response_msg = (
+                        f"🔍 Found **{len(results)} products** matching '**{search_query}**':\n\n"
+                        f"{options}\n\n"
+                        f"Which product would you like to add? Reply with the number (1-{min(len(results), 10)})."
+                    )
 
-                return {
-                    "messages": [AIMessage(content=response_msg)],
-                    "last_mentioned_job_id": job_id,
-                    "pending_disambiguation": {
-                        "agent": "edit_job",
-                        "disambiguation_type": "product_selection",
-                        "items": results[:10],
-                        "job_id": job_id,
-                    },
-                }
+                    return {
+                        "messages": [AIMessage(content=response_msg)],
+                        "last_mentioned_job_id": job_id,
+                        "pending_disambiguation": {
+                            "agent": "edit_job",
+                            "disambiguation_type": "product_selection",
+                            "items": results[:10],
+                            "job_id": job_id,
+                        },
+                    }
+                else:
+                    # Standalone search - just show results
+                    response_msg = (
+                        f"🔍 Found **{len(results)} products** matching '**{search_query}**':\n\n"
+                        f"{options}\n\n"
+                        f"These are the available products. To add any of these to a job, you can:\n"
+                        f"- Say 'add [product name/number] to job [job ID]'\n"
+                        f"- Or say 'edit a job' to start editing a specific job"
+                    )
             else:
                 response_msg = f"No products found matching '**{search_query}**'. Try a different description or item code."
 
+    elif operation == "view_items":
+        # View current items in the job
+        job_items = tools.get_job_line_items(job_id)
+
+        if not job_items:
+            response_msg = f"Job **{job_id}** has no items yet. Would you like to add some items?"
+        else:
+            items_list = "\n".join([
+                f"  {i+1}. **{item['item_name']}**\n"
+                f"     Code: {item.get('item_code') or 'N/A'} | "
+                f"Qty: {item.get('quantity', 1)} | "
+                f"Price: {item.get('unit_price') or 'Pending quote'} AED | "
+                f"Total: {(item.get('unit_price') or 0) * item.get('quantity', 1):.2f} AED"
+                for i, item in enumerate(job_items)
+            ])
+
+            total_cost = sum(
+                (item.get('unit_price') or 0) * item.get('quantity', 1)
+                for item in job_items
+            )
+
+            response_msg = (
+                f"📋 **Items in Job {job_id}:**\n\n"
+                f"{items_list}\n\n"
+                f"**Total:** {total_cost:.2f} AED\n\n"
+                f"You can:\n"
+                f"- Add more items by saying 'add [item name/code]'\n"
+                f"- Update an item by saying 'update item [number] quantity to [X]'\n"
+                f"- Remove an item by saying 'remove item [number]'"
+            )
+
     else:
-        response_msg = f"I don't understand the operation '{operation}'. I can help with: add_item, remove_item, update_item, update_description, or search_product."
+        response_msg = f"I don't understand the operation '{operation}'. I can help with: add_item, remove_item, update_item, update_description, view_items, or search_product."
 
     # Update state with context
     return {

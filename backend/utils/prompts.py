@@ -187,18 +187,23 @@ Conversation context:
 - Available context: {context}
 
 Determine:
-1. Operation type: add_item, remove_item, update_item, update_description, search_product
+1. Operation type: add_item, remove_item, update_item, update_description, search_product, view_items
 2. job_id (use context if not explicitly stated)
 3. Relevant parameters based on operation type
 
 For add_item: item_name, item_code, quantity, unit_price (numeric value only, no currency symbols), vendor_email
+  - If the user provides something that looks like an item code (e.g., "GALL:118:H6461BP", "ABC-123", "XYZ:456"),
+    set BOTH item_name AND item_code to the COMPLETE string (do not split it).
+  - If the user provides a descriptive name (e.g., "hydraulic pump"), set item_name to the description.
 For remove_item: item_identifier (name or id)
 For update_item: item_identifier, new_quantity, new_unit_price (numeric value only, no currency symbols), new_item_name, new_item_code
 For update_description: new_description
 For search_product: search_query (the product description to search for)
+For view_items: no additional parameters (used when user wants to see current items in the job)
 
 Use "search_product" when the user says things like "search for", "find product", "look up", "search products for..."
 Use "add_item" when the user wants to add an item directly (the system will search automatically by description).
+Use "view_items" when the user wants to see/list/show the current items in the job (e.g., "show me the list of items", "what items are in this job", "list items").
 The item_name field can be a descriptive search like "hydraulic pump" or "marine engine" — the system supports semantic search by description.
 
 IMPORTANT: If the user message is just a number (like "1", "2", "3") or a simple confirmation ("yes", "no"), return an empty JSON object {{}}.

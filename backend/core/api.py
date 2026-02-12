@@ -277,6 +277,18 @@ def get_requests(current_user: User = Depends(get_current_user), db: Session = D
         requests = db.query(CostingRequest).all()
     else:
         requests = db.query(CostingRequest).filter(CostingRequest.user_id == current_user.id).all()
+
+    # Calculate price on-the-fly for jobs that don't have it set
+    for req in requests:
+        if req.price is None:
+            total_price = sum(
+                (item.unit_price or 0) * (item.quantity or 1)
+                for item in req.line_items
+                if item.unit_price is not None
+            )
+            req.price = total_price if total_price > 0 else None
+
+    db.commit()
     return requests
 
 class ItemSearchResult(BaseModel):
