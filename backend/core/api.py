@@ -11,6 +11,8 @@ import bcrypt
 import os
 import uuid
 import glob as glob_module
+import logging
+import traceback
 from core import config
 from core.database import SessionLocal, User, Conversation, Message, CostingRequest, CostingLineItem, Product, EstimationLines, init_db
 from main import invoke_agent
@@ -18,6 +20,7 @@ from utils import tools
 from utils.lifecycle_tracing import get_job_metrics, get_aggregate_metrics
 from contextlib import asynccontextmanager
 
+logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app):
@@ -607,14 +610,20 @@ def download_costing_sheet_by_job(job_id: str, current_user: User = Depends(get_
 
     # If file doesn't exist, regenerate it
     if not os.path.exists(file_path):
+        logger.info(f"Costing sheet not found for job {job_id}, attempting regeneration")
+
         # Get the costing request from database
         costing_req = db.query(CostingRequest).filter(CostingRequest.job_id == job_id).first()
 
         if not costing_req:
+            logger.error(f"Job {job_id} not found in database")
             raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+
+        logger.debug(f"Found costing request: id={costing_req.id}, quotation_id={costing_req.quotation_id}, item_details={costing_req.item_details}")
 
         # Check user has access to this job
         if current_user.role != "admin" and costing_req.user_id != current_user.id:
+            logger.warning(f"User {current_user.username} denied access to job {job_id}")
             raise HTTPException(status_code=403, detail="Access denied")
 
         # Get line items for this job
@@ -622,29 +631,42 @@ def download_costing_sheet_by_job(job_id: str, current_user: User = Depends(get_
             CostingLineItem.costing_request_id == costing_req.id
         ).all()
 
+        logger.info(f"Retrieved {len(line_items)} line items for job {job_id}")
+
         # Convert to the format expected by create_costing_sheet_with_items
         items_data = []
-        for item in line_items:
-            items_data.append({
+        for idx, item in enumerate(line_items):
+            item_dict = {
                 "item_name": item.item_name,
                 "item_code": item.item_code or "",
                 "quantity": item.quantity or 1,
                 "unit_price": item.unit_price,
-                "vendor_email": item.vendor_email,
                 "price_status": item.price_status or "resolved",
-                "is_labour": item.item_type == "Hour" if item.item_type else False,
-            })
+                "item_type": item.item_type,
+                "estimation_quantity": item.estimation_quantity,
+                "estimation_last_purchase_price": item.estimation_last_purchase_price,
+                "estimation_average_price": item.estimation_average_price,
+                "products_table_price": item.products_table_price,
+                "price_source": item.price_source,
+                "margin": None,  # Will use default margin from config
+            }
+            items_data.append(item_dict)
+            logger.debug(f"Item {idx}: {item_dict}")
 
         # Regenerate the costing sheet
         try:
+            logger.info(f"Calling create_costing_sheet_with_items for job {job_id}")
             generated_filename = tools.create_costing_sheet_with_items(
                 job_id=job_id,
                 items=items_data,
                 quotation_id=costing_req.quotation_id or "N/A",
-                description=costing_req.description or "Costing Request"
+                description=costing_req.item_details or "Costing Request"
             )
             file_path = os.path.join(config.TEMP_DOWNLOADS_DIR, generated_filename)
+            logger.info(f"Successfully regenerated costing sheet: {generated_filename}")
         except Exception as e:
+            logger.error(f"Failed to regenerate costing sheet for job {job_id}: {str(e)}")
+            logger.error(f"Traceback: {traceback.format_exc()}")
             raise HTTPException(status_code=500, detail=f"Failed to regenerate costing sheet: {str(e)}")
 
     return FileResponse(
@@ -669,15 +691,20 @@ def download_costing_sheet(filename: str, current_user: User = Depends(get_curre
         # Extract job_id from filename (pattern: costing_{job_id}.xlsx)
         if filename.startswith("costing_") and filename.endswith(".xlsx"):
             job_id = filename[8:-5]  # Remove "costing_" prefix and ".xlsx" suffix
+            logger.info(f"Costing sheet {filename} not found for job {job_id}, attempting regeneration")
 
             # Get the costing request from database
             costing_req = db.query(CostingRequest).filter(CostingRequest.job_id == job_id).first()
 
             if not costing_req:
+                logger.error(f"Job {job_id} not found in database")
                 raise HTTPException(status_code=404, detail="Costing sheet not found")
+
+            logger.debug(f"Found costing request: id={costing_req.id}, quotation_id={costing_req.quotation_id}, item_details={costing_req.item_details}")
 
             # Check user has access to this job
             if current_user.role != "admin" and costing_req.user_id != current_user.id:
+                logger.warning(f"User {current_user.username} denied access to job {job_id}")
                 raise HTTPException(status_code=403, detail="Access denied")
 
             # Get line items for this job
@@ -685,31 +712,45 @@ def download_costing_sheet(filename: str, current_user: User = Depends(get_curre
                 CostingLineItem.costing_request_id == costing_req.id
             ).all()
 
+            logger.info(f"Retrieved {len(line_items)} line items for job {job_id}")
+
             # Convert to the format expected by create_costing_sheet_with_items
             items_data = []
-            for item in line_items:
-                items_data.append({
+            for idx, item in enumerate(line_items):
+                item_dict = {
                     "item_name": item.item_name,
                     "item_code": item.item_code or "",
                     "quantity": item.quantity or 1,
                     "unit_price": item.unit_price,
-                    "vendor_email": item.vendor_email,
                     "price_status": item.price_status or "resolved",
-                    "is_labour": item.item_type == "Hour" if item.item_type else False,
-                })
+                    "item_type": item.item_type,
+                    "estimation_quantity": item.estimation_quantity,
+                    "estimation_last_purchase_price": item.estimation_last_purchase_price,
+                    "estimation_average_price": item.estimation_average_price,
+                    "products_table_price": item.products_table_price,
+                    "price_source": item.price_source,
+                    "margin": None,  # Will use default margin from config
+                }
+                items_data.append(item_dict)
+                logger.debug(f"Item {idx}: {item_dict}")
 
             # Regenerate the costing sheet
             try:
+                logger.info(f"Calling create_costing_sheet_with_items for job {job_id}")
                 generated_filename = tools.create_costing_sheet_with_items(
                     job_id=job_id,
                     items=items_data,
                     quotation_id=costing_req.quotation_id or "N/A",
-                    description=costing_req.description or "Costing Request"
+                    description=costing_req.item_details or "Costing Request"
                 )
                 file_path = os.path.join(config.TEMP_DOWNLOADS_DIR, generated_filename)
+                logger.info(f"Successfully regenerated costing sheet: {generated_filename}")
             except Exception as e:
+                logger.error(f"Failed to regenerate costing sheet for job {job_id}: {str(e)}")
+                logger.error(f"Traceback: {traceback.format_exc()}")
                 raise HTTPException(status_code=500, detail=f"Failed to regenerate costing sheet: {str(e)}")
         else:
+            logger.warning(f"File {filename} not found and doesn't match costing sheet pattern")
             raise HTTPException(status_code=404, detail="Costing sheet not found")
 
     return FileResponse(
