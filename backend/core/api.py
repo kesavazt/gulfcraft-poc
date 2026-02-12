@@ -632,7 +632,7 @@ def download_costing_sheet_by_job(job_id: str, current_user: User = Depends(get_
                 "unit_price": item.unit_price,
                 "vendor_email": item.vendor_email,
                 "price_status": item.price_status or "resolved",
-                "is_labour": item.item_name and "labour" in item.item_name.lower(),
+                "is_labour": item.item_type == "Hour" if item.item_type else False,
             })
 
         # Regenerate the costing sheet
@@ -695,7 +695,7 @@ def download_costing_sheet(filename: str, current_user: User = Depends(get_curre
                     "unit_price": item.unit_price,
                     "vendor_email": item.vendor_email,
                     "price_status": item.price_status or "resolved",
-                    "is_labour": item.item_name and "labour" in item.item_name.lower(),
+                    "is_labour": item.item_type == "Hour" if item.item_type else False,
                 })
 
             # Regenerate the costing sheet
