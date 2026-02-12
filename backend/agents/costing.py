@@ -125,9 +125,9 @@ def _update_sharepoint(job_id: str, description: str, costing_items: list, has_p
         logger.error(f"SharePoint update failed for {job_id}: {e}")
 
 
-def _build_response(job_id: str, quotation_id: str, line_num: int, 
-                    costing_items: list, pending_items: list, 
-                    file_path: str, sharepoint_url: str, threshold: float):
+def _build_response(job_id: str, quotation_id: str, line_num: int,
+                    costing_items: list, pending_items: list,
+                    filename: str, download_url: str, threshold: float):
     """Build the response message for the user."""
     labour_items = [i for i in costing_items if i.get("is_labour")]
     non_labour_resolved = [i for i in costing_items if not i.get("is_labour") and i["price_status"] == "resolved"]
@@ -219,10 +219,10 @@ def costing_node(state: AgentState):
 
         # Step 5: Generate costing sheet
         with span_context("generate_sheet", {"job_id": job_id}) as sheet_span:
-            file_path = tools.create_costing_sheet_with_items(
+            filename = tools.create_costing_sheet_with_items(
                 job_id, costing_items, quotation_id, description
             )
-            sheet_span.update(output={"file_path": file_path, "has_pending": len(pending_quote_items) > 0})
+            sheet_span.update(output={"filename": filename, "has_pending": len(pending_quote_items) > 0})
 
         # Step 6: Send emails for pending items
         if pending_quote_items:
@@ -230,7 +230,7 @@ def costing_node(state: AgentState):
                 _send_quote_emails(job_id, pending_quote_items)
 
         # Step 7: Set download URL
-        sharepoint_url = f"/costing-sheets/{file_path}" if file_path else None
+        download_url = f"/costing-sheets/{filename}" if filename else None
 
         # Step 8: Update SharePoint
         sp_status = "Awaiting Quote" if pending_quote_items else "Ready"
@@ -240,7 +240,7 @@ def costing_node(state: AgentState):
         # Build response
         response = _build_response(
             job_id, quotation_id, line_num, costing_items, pending_quote_items,
-            file_path, sharepoint_url, threshold
+            filename, download_url, threshold
         )
 
     return {
@@ -250,8 +250,8 @@ def costing_node(state: AgentState):
         "estimation_items": estimation_items,
         "costing_items": costing_items,
         "pending_quote_items": pending_quote_items,
-        "generated_file": file_path,
-        "sharepoint_url": sharepoint_url,
+        "generated_file": filename,
+        "download_url": download_url,
         "emails_sent": len(pending_quote_items) > 0,
         "awaiting_quotes": len(pending_quote_items) > 0
     }

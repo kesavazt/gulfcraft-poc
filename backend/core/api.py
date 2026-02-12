@@ -21,6 +21,13 @@ from contextlib import asynccontextmanager
 
 @asynccontextmanager
 async def lifespan(app):
+    # Startup: Ensure temp_downloads directory exists
+    try:
+        os.makedirs(config.TEMP_DOWNLOADS_DIR, exist_ok=True)
+        print(f"[api] Temp downloads directory ready: {config.TEMP_DOWNLOADS_DIR}")
+    except Exception as e:
+        print(f"[api] Failed to create temp_downloads directory: {e}")
+
     # Startup: launch email monitor in background thread
     try:
         from services.email_monitor import start_email_monitor
@@ -240,9 +247,14 @@ def chat(request: ChatRequest, current_user: User = Depends(get_current_user), d
     # Check if a costing sheet was generated and build download URL
     download_url = None
     generated_file = result["state"].get("generated_file")
-    if generated_file and os.path.exists(generated_file):
-        filename = os.path.basename(generated_file)
-        download_url = f"/costing-sheets/{filename}"
+    if generated_file:
+        # generated_file is just the filename (e.g., "costing_COST-00123456.xlsx")
+        # Verify it exists before providing download URL
+        full_path = os.path.join(config.TEMP_DOWNLOADS_DIR, generated_file)
+        if os.path.exists(full_path):
+            download_url = f"/costing-sheets/{generated_file}"
+        else:
+            print(f"[API] Warning: Generated file not found: {full_path}")
 
     return {
         "response": result["response"],
@@ -440,6 +452,16 @@ def delete_line_item(job_id: str, item_id: int, current_user: User = Depends(get
     if not line_item:
         raise HTTPException(status_code=404, detail="Line item not found")
 
+    # Delete any pending quote requests for this line item first (foreign key constraint)
+    from core.database import PendingQuoteRequest
+    pending_quotes = db.query(PendingQuoteRequest).filter(
+        PendingQuoteRequest.costing_line_item_id == item_id
+    ).all()
+
+    for pending_quote in pending_quotes:
+        db.delete(pending_quote)
+
+    # Now delete the line item
     db.delete(line_item)
     db.commit()
 

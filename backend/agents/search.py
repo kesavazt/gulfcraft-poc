@@ -95,7 +95,7 @@ def search_node(state: AgentState):
 def refinement_node(state: AgentState):
     """
     Presents search results to user and asks for selection.
-    
+
     Parses the tool output and stores structured quotation data in state.
     """
     messages = state.get("messages", [])
@@ -120,22 +120,24 @@ def refinement_node(state: AgentState):
             parsed_quotations = json.loads(fetched_quotations)
         except json.JSONDecodeError:
             parsed_quotations = ast.literal_eval(fetched_quotations)
-        
+
         if not isinstance(parsed_quotations, list):
             parsed_quotations = []
     except Exception as e:
         print(f"Error parsing quotations: {e}")
         parsed_quotations = []
 
-    # Generate presentation message
-    presentation_prompt = [("system", REFINEMENT_PROMPT.format(count=len(parsed_quotations)))]
-    try:
-        result = llm.invoke(presentation_prompt)
-    except Exception as e:
-        raise
+    if not parsed_quotations:
+        return {
+            "messages": [AIMessage(content="I couldn't find any quotations. Please try again with a different description or boat model.")],
+            "awaiting_selection": False
+        }
+
+    # Simple message - let frontend handle rendering
+    response_msg = f"✅ I found **{len(parsed_quotations)} similar quotations**. Please select one to proceed."
 
     return {
-        "messages": [result],
+        "messages": [AIMessage(content=response_msg)],
         "awaiting_selection": True,
         "similar_quotations": parsed_quotations
     }

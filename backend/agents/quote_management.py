@@ -16,9 +16,10 @@ from utils.langfuse_tracing import trace_agent
 
 
 def _get_generated_file_path(job_id: str):
-    """Return the costing sheet file path if it exists on disk."""
-    file_path = os.path.join(config.TEMP_DOWNLOADS_DIR, f"costing_{job_id}.xlsx")
-    return file_path if os.path.exists(file_path) else None
+    """Return the costing sheet filename if it exists on disk."""
+    filename = f"costing_{job_id}.xlsx"
+    file_path = os.path.join(config.TEMP_DOWNLOADS_DIR, filename)
+    return filename if os.path.exists(file_path) else None
 
 
 def _extract_quote_parameters(user_message: str, state: AgentState) -> dict:

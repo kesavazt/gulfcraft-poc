@@ -64,10 +64,23 @@ _supervisor_chain = _prompt | llm.with_structured_output(ROUTE_FUNCTION_DEF)
 def supervisor_node(state: AgentState):
     """
     Supervisor node that routes user requests to appropriate worker agents.
-    
+
     Returns:
         dict with 'next' key indicating the next agent, and optionally 'messages' for greetings.
     """
+    # Check if there's a pending disambiguation/interactive flow
+    # If so, route back to the same agent without re-evaluating intent
+    pending = state.get("pending_disambiguation")
+    if pending and pending.get("agent"):
+        agent_map = {
+            "edit_job": "EditJobAgent",
+            "quote_management": "QuoteManagementAgent",
+            "pricing_advisor": "PricingAdvisorAgent",
+        }
+        agent_name = agent_map.get(pending["agent"])
+        if agent_name:
+            return {"next": agent_name}
+
     trace_input = {"messages_count": len(state.get("messages", []))}
     try:
         result = _supervisor_chain.invoke(state)

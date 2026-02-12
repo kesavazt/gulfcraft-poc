@@ -198,10 +198,8 @@ def invoke_agent(message: str, user_id: int = 1, threshold: float = 1000.0, conv
                         if isinstance(msg, AIMessage) and msg.content:
                             response_messages.append(msg.content)
 
-    # Preserve generated_file: use current turn's value, or fall back to session state
+    # Only use current turn's generated_file, don't preserve from previous turns
     generated_file = final_state.get("generated_file")
-    if not generated_file and session_state:
-        generated_file = session_state.get("generated_file")
 
     return {
         "response": "\n".join(response_messages),

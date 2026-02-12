@@ -182,18 +182,7 @@ def pricing_advisor_node(state: AgentState):
 
             if search_result.get("found"):
                 results = search_result["results"]
-                options = "\n".join([
-                    f"  {i+1}. **{_truncate(p['item_name'])}** "
-                    f"(Code: {p.get('item_code') or 'N/A'}, "
-                    f"Unit Cost: {_format_cost(p.get('unit_cost'))})"
-                    for i, p in enumerate(results[:10])
-                ])
-
-                response_msg = (
-                    f"🔎 Found **{len(results)} products** matching '**{query_text}**':\n\n"
-                    f"{options}\n\n"
-                    f"Select a product number to see detailed pricing, or ask about a specific item code."
-                )
+                response_msg = f"🔎 Found **{len(results)} products** matching '**{query_text}**'. Please select one to see detailed pricing."
 
                 return {
                     "messages": [AIMessage(content=response_msg)],
@@ -217,17 +206,7 @@ def pricing_advisor_node(state: AgentState):
                     if len(products) == 1:
                         item_code = products[0].get("item_code")
                     else:
-                        options = "\n".join([
-                            f"  {i+1}. **{_truncate(p['item_name'])}** "
-                            f"(Code: {p.get('item_code') or 'N/A'}, "
-                            f"Unit Cost: {_format_cost(p.get('unit_cost'))})"
-                            for i, p in enumerate(products[:10])
-                        ])
-                        response_msg = (
-                            f"I found multiple products matching '**{item_name}**':\n\n"
-                            f"{options}\n\n"
-                            f"Select a product number to see its price history."
-                        )
+                        response_msg = f"🔎 Found **{len(products)} products** matching '**{item_name}**'. Please select one to see its price history."
                         return {
                             "messages": [AIMessage(content=response_msg)],
                             "pending_disambiguation": {
@@ -279,17 +258,7 @@ def pricing_advisor_node(state: AgentState):
                 if len(products) == 1:
                     item_code = products[0].get("item_code")
                 else:
-                    options = "\n".join([
-                        f"  {i+1}. **{_truncate(p['item_name'])}** "
-                        f"(Code: {p.get('item_code') or 'N/A'}, "
-                        f"Unit Cost: {_format_cost(p.get('unit_cost'))})"
-                        for i, p in enumerate(products[:10])
-                    ])
-                    response_msg = (
-                        f"I found multiple products matching '**{item_name}**':\n\n"
-                        f"{options}\n\n"
-                        f"Select a product number to see its average pricing."
-                    )
+                    response_msg = f"🔎 Found **{len(products)} products** matching '**{item_name}**'. Please select one to see its average pricing."
                     return {
                         "messages": [AIMessage(content=response_msg)],
                         "pending_disambiguation": {
@@ -337,17 +306,7 @@ def pricing_advisor_node(state: AgentState):
                 if len(products) == 1:
                     item_code = products[0].get("item_code")
                 else:
-                    options = "\n".join([
-                        f"  {i+1}. **{_truncate(p['item_name'])}** "
-                        f"(Code: {p.get('item_code') or 'N/A'}, "
-                        f"Unit Cost: {_format_cost(p.get('unit_cost'))})"
-                        for i, p in enumerate(products[:10])
-                    ])
-                    response_msg = (
-                        f"I found multiple products matching '**{item_name}**':\n\n"
-                        f"{options}\n\n"
-                        f"Select a product number to compare pricing."
-                    )
+                    response_msg = f"🔎 Found **{len(products)} products** matching '**{item_name}**'. Please select one to compare pricing."
                     return {
                         "messages": [AIMessage(content=response_msg)],
                         "pending_disambiguation": {

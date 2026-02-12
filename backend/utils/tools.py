@@ -455,7 +455,7 @@ def create_costing_sheet_with_items(
     Generates a costing sheet Excel file with the provided items.
     Items with price > threshold have 'pending' as their price.
     Applies profit margin from config to calculate selling prices.
-    Returns the file path of the generated sheet.
+    Returns the filename (not full path) of the generated sheet.
     """
     wb = Workbook()
     ws = wb.active
@@ -511,7 +511,7 @@ def create_costing_sheet_with_items(
         cell.alignment = Alignment(horizontal='center')
 
     # Sort items: non-labour first, labour last
-    sorted_items = sorted(items, key=lambda x: (x.get("item_type", "").lower() == "hour", x.get("item_name", "")))
+    sorted_items = sorted(items, key=lambda x: ((x.get("item_type") or "").lower() == "hour", x.get("item_name", "")))
 
     # Add items
     total_cost = 0
@@ -615,10 +615,17 @@ def create_costing_sheet_with_items(
     filename = f"costing_{job_id}.xlsx"
     output_path = os.path.join(config.TEMP_DOWNLOADS_DIR, filename)
     os.makedirs(config.TEMP_DOWNLOADS_DIR, exist_ok=True)
-    wb.save(output_path)
 
-    print(f"[CostingSheet] Generated: {output_path} (Default Margin: {default_margin}x)")
-    return output_path
+    try:
+        wb.save(output_path)
+        print(f"[CostingSheet] Generated: {output_path} (Default Margin: {default_margin}x)")
+        print(f"[CostingSheet] File exists: {os.path.exists(output_path)}")
+        print(f"[CostingSheet] File size: {os.path.getsize(output_path) if os.path.exists(output_path) else 0} bytes")
+    except Exception as e:
+        print(f"[CostingSheet] Error saving file: {e}")
+        raise
+
+    return filename  # Return just the filename, not the full path
 
 
 @trace_tool
@@ -626,6 +633,7 @@ def regenerate_costing_sheet(job_id: str) -> Optional[str]:
     """
     Regenerates the costing sheet from the latest DB state for the given job.
     Useful after receiving new quotes so downloads reflect updated prices.
+    Returns the filename (not full path) of the regenerated sheet.
     """
     session = SessionLocal()
     try:
@@ -634,12 +642,16 @@ def regenerate_costing_sheet(job_id: str) -> Optional[str]:
         ).first()
 
         if not costing_req:
-            logger.warning(f"[CostingSheet] No costing request found for {job_id}")
+            logger.warning(f"[RegenerateSheet] No costing request found for {job_id}")
             return None
 
         line_items = session.query(CostingLineItem).filter(
             CostingLineItem.costing_request_id == costing_req.id
         ).all()
+
+        print(f"[RegenerateSheet] Job: {job_id}")
+        print(f"[RegenerateSheet] Found {len(line_items)} line items")
+        print(f"[RegenerateSheet] Line item IDs: {[li.id for li in line_items]}")
 
         items = []
         for li in line_items:
@@ -664,19 +676,29 @@ def regenerate_costing_sheet(job_id: str) -> Optional[str]:
                 "margin": getattr(li, "margin", None)
             })
 
-        result = create_costing_sheet_with_items(
+        filename = create_costing_sheet_with_items(
             job_id=job_id,
             items=items,
             quotation_id=costing_req.quotation_id or "",
             description=costing_req.item_details or ""
         )
-        if result:
-            logger.info(f"[CostingSheet] Regenerated successfully: {result}")
+
+        if filename:
+            # Verify file was actually saved
+            full_path = os.path.join(config.TEMP_DOWNLOADS_DIR, filename)
+            if os.path.exists(full_path):
+                logger.info(f"[RegenerateSheet] Successfully regenerated: {filename}")
+                print(f"[RegenerateSheet] File saved at: {full_path}")
+            else:
+                logger.error(f"[RegenerateSheet] File not found after generation: {full_path}")
+                return None
         else:
-            logger.error(f"[CostingSheet] Regeneration returned no path for {job_id}")
-        return result
+            logger.error(f"[RegenerateSheet] Generation returned no filename for {job_id}")
+            return None
+
+        return filename  # Return just the filename
     except Exception as e:
-        logger.error(f"[CostingSheet] Regenerate error for {job_id}: {e}", exc_info=True)
+        logger.error(f"[RegenerateSheet] Error for {job_id}: {e}", exc_info=True)
         return None
     finally:
         session.close()
@@ -1147,11 +1169,21 @@ def check_all_quotes_received(job_id: str) -> Dict[str, Any]:
                     status="Ready",
                     price=round(total_selling, 2) if total_selling else None
                 )
-                # Notify via email that the job is ready
+
+                # Get costing sheet file path for email attachment
+                filename = f"costing_{job_id}.xlsx"
+                file_path = os.path.join(config.TEMP_DOWNLOADS_DIR, filename)
+                attachment_path = file_path if os.path.exists(file_path) else None
+
+                if not attachment_path:
+                    print(f"[ReadyNotification] Costing sheet not found at {file_path}, email will be sent without attachment")
+
+                # Notify via email that the job is ready (with attachment)
                 send_costing_ready_notification(
                     job_id=job_id,
                     description=costing_req.item_details or "",
-                    sharepoint_url=costing_req.sharepoint_url
+                    sharepoint_url=costing_req.sharepoint_url,
+                    attachment_path=attachment_path
                 )
 
             return {
@@ -1254,26 +1286,30 @@ def add_line_item_to_job(
         )
         session.add(line_item)
         session.commit()
+        session.refresh(line_item)  # Ensure we have the latest state with ID
 
-        print(f"[AddLineItem] Added {item_name} to {job_id}")
+        item_id = line_item.id
+        print(f"[AddLineItem] Added {item_name} (ID: {item_id}) to {job_id}")
 
-        # Regenerate costing sheet
-        regenerate_costing_sheet(job_id)
-
-        return {
-            "success": True,
-            "item_id": line_item.id,
-            "item_name": item_name,
-            "quantity": quantity,
-            "unit_price": unit_price,
-            "price_status": price_status
-        }
     except Exception as e:
         print(f"[AddLineItem] Error: {e}")
         session.rollback()
         return {"success": False, "error": str(e)}
     finally:
         session.close()
+
+    # Regenerate costing sheet AFTER closing the session to ensure commit is flushed
+    file_path = regenerate_costing_sheet(job_id)
+
+    return {
+        "success": True,
+        "item_id": item_id,
+        "item_name": item_name,
+        "quantity": quantity,
+        "unit_price": unit_price,
+        "price_status": price_status,
+        "file_path": file_path,
+    }
 
 
 @trace_tool
@@ -1310,21 +1346,41 @@ def remove_line_item_from_job(job_id: str, item_identifier: str) -> Dict[str, An
             return {"success": False, "error": f"Item '{item_identifier}' not found in job {job_id}"}
 
         item_name = line_item.item_name
+        line_item_id = line_item.id
+
+        # Delete any pending quote requests for this line item first (foreign key constraint)
+        from core.database import PendingQuoteRequest
+        pending_quotes = session.query(PendingQuoteRequest).filter(
+            PendingQuoteRequest.costing_line_item_id == line_item_id
+        ).all()
+
+        for pending_quote in pending_quotes:
+            session.delete(pending_quote)
+
+        if pending_quotes:
+            print(f"[RemoveLineItem] Deleted {len(pending_quotes)} pending quote request(s) for {item_name}")
+
+        # Now delete the line item
         session.delete(line_item)
         session.commit()
 
         print(f"[RemoveLineItem] Removed {item_name} from {job_id}")
 
-        # Regenerate costing sheet
-        regenerate_costing_sheet(job_id)
-
-        return {"success": True, "removed_item": item_name}
     except Exception as e:
         print(f"[RemoveLineItem] Error: {e}")
         session.rollback()
         return {"success": False, "error": str(e)}
     finally:
         session.close()
+
+    # Regenerate costing sheet AFTER closing the session to ensure commit is flushed
+    file_path = regenerate_costing_sheet(job_id)
+
+    return {
+        "success": True,
+        "removed_item": item_name,
+        "file_path": file_path,
+    }
 
 
 def search_products_for_agent(query: str, limit: int = 10) -> Dict[str, Any]:
@@ -1339,9 +1395,10 @@ def search_products_for_agent(query: str, limit: int = 10) -> Dict[str, Any]:
     if not query or len(query) < 2:
         return {"found": False, "results": [], "message": "Search query too short (min 2 characters)"}
 
-    # Determine if this is a description-based query (use hybrid search)
-    # vs a code-based query (use ILIKE)
-    is_description_query = len(query) > 5 and " " in query
+    # Determine if this is likely a description-based query
+    # Use hybrid search for queries that look like descriptions (not just codes)
+    is_code_only = query.replace("-", "").replace("_", "").isalnum() and len(query) < 15
+    is_description_query = len(query) > 3 and not is_code_only
 
     session = SessionLocal()
     try:
@@ -1365,10 +1422,11 @@ def search_products_for_agent(query: str, limit: int = 10) -> Dict[str, Any]:
                     })
                     seen_items.add(item_key)
 
-        # ILIKE search on Products by item_number (code)
+        # ILIKE search on Products by item_number (code) OR description
         search_pattern = f"%{query}%"
         products = session.query(Product).filter(
-            Product.item_number.ilike(search_pattern)
+            (Product.item_number.ilike(search_pattern)) |
+            (Product.description.ilike(search_pattern))
         ).limit(20).all()
 
         for product in products:
@@ -1643,24 +1701,32 @@ def update_line_item(
 
         session.commit()
 
-        print(f"[UpdateLineItem] Updated {line_item.item_name} in {job_id}")
+        # Save values before closing session
+        item_name = line_item.item_name
+        quantity = line_item.quantity
+        unit_price = line_item.unit_price
+        price_status = line_item.price_status
 
-        # Regenerate costing sheet
-        regenerate_costing_sheet(job_id)
+        print(f"[UpdateLineItem] Updated {item_name} in {job_id}")
 
-        return {
-            "success": True,
-            "item_name": line_item.item_name,
-            "quantity": line_item.quantity,
-            "unit_price": line_item.unit_price,
-            "price_status": line_item.price_status
-        }
     except Exception as e:
         print(f"[UpdateLineItem] Error: {e}")
         session.rollback()
         return {"success": False, "error": str(e)}
     finally:
         session.close()
+
+    # Regenerate costing sheet AFTER closing the session to ensure commit is flushed
+    file_path = regenerate_costing_sheet(job_id)
+
+    return {
+        "success": True,
+        "item_name": item_name,
+        "quantity": quantity,
+        "unit_price": unit_price,
+        "price_status": price_status,
+        "file_path": file_path,
+    }
 
 
 @trace_tool
@@ -1680,10 +1746,15 @@ def update_job_description(job_id: str, new_description: str) -> Dict[str, Any]:
 
         print(f"[UpdateJobDesc] Updated description for {job_id}")
 
-        # Regenerate costing sheet
-        regenerate_costing_sheet(job_id)
+        # Regenerate costing sheet after committing description
+        file_path = regenerate_costing_sheet(job_id)
 
-        return {"success": True, "job_id": job_id, "new_description": new_description}
+        return {
+            "success": True,
+            "job_id": job_id,
+            "new_description": new_description,
+            "file_path": file_path,
+        }
     except Exception as e:
         print(f"[UpdateJobDesc] Error: {e}")
         session.rollback()
@@ -2024,12 +2095,14 @@ def cancel_quote_request(job_id: str, item_name: str) -> Dict[str, Any]:
 @trace_tool
 def get_item_price_history(item_code: str, item_name: str = None, limit: int = 10) -> List[Dict[str, Any]]:
     """
-    Retrieves price history for an item from past costing jobs.
+    Retrieves price history for an item from past costing jobs AND historical estimation lines.
     Searches by item_code first, falls back to item_name ILIKE if no results.
     """
     session = SessionLocal()
     try:
-        # Search by item_code first
+        history = []
+
+        # 1. Get data from CostingLineItem (recent costing jobs)
         line_items = session.query(CostingLineItem).filter(
             CostingLineItem.item_code == item_code,
             CostingLineItem.unit_price.isnot(None)
@@ -2042,7 +2115,6 @@ def get_item_price_history(item_code: str, item_name: str = None, limit: int = 1
                 CostingLineItem.unit_price.isnot(None)
             ).order_by(CostingLineItem.quote_received_at.desc()).limit(limit).all()
 
-        history = []
         for item in line_items:
             costing_req = session.query(CostingRequest).filter(
                 CostingRequest.id == item.costing_request_id
@@ -2058,7 +2130,45 @@ def get_item_price_history(item_code: str, item_name: str = None, limit: int = 1
                 "date": item.quote_received_at.isoformat() if item.quote_received_at else None
             })
 
-        return history
+        # 2. Get historical data from EstimationLines
+        estimation_items = session.query(EstimationLines).filter(
+            EstimationLines.std_item_code == item_code
+        ).limit(limit).all()
+
+        # Fallback: search by item_name if no results by code
+        if not estimation_items and item_name:
+            estimation_items = session.query(EstimationLines).filter(
+                EstimationLines.item_name.ilike(f"%{item_name}%")
+            ).limit(limit).all()
+
+        for est_item in estimation_items:
+            # Add entries for different price types from estimation
+            if est_item.last_purchase_price and est_item.last_purchase_price > 0:
+                history.append({
+                    "job_id": est_item.quotation_id or "Historical",
+                    "item_name": est_item.item_name,
+                    "item_code": est_item.std_item_code,
+                    "unit_price": float(est_item.last_purchase_price),
+                    "quantity": est_item.item_qty,
+                    "vendor_email": "Historical Data",
+                    "date": "Historical (Last Purchase)"
+                })
+
+            if est_item.average_price and est_item.average_price > 0:
+                history.append({
+                    "job_id": est_item.quotation_id or "Historical",
+                    "item_name": est_item.item_name,
+                    "item_code": est_item.std_item_code,
+                    "unit_price": float(est_item.average_price),
+                    "quantity": est_item.item_qty,
+                    "vendor_email": "Historical Data",
+                    "date": "Historical (Average)"
+                })
+
+        # Sort by date (most recent first, then historical)
+        history.sort(key=lambda x: (x["date"] is None or "Historical" in str(x["date"]), x.get("date") or ""), reverse=True)
+
+        return history[:limit * 2]  # Return more results since we're combining two sources
     except Exception as e:
         print(f"[PriceHistory] Error: {e}")
         return []
@@ -2096,13 +2206,14 @@ def get_current_product_price(item_code: str) -> Dict[str, Any]:
 @trace_tool
 def get_average_item_price(item_code: str, item_name: str = None) -> Dict[str, Any]:
     """
-    Calculates average price for an item from historical data.
+    Calculates average price for an item from historical data (CostingLineItem + EstimationLines).
     Searches by item_code first, falls back to item_name ILIKE if no results.
     """
     session = SessionLocal()
     try:
         from sqlalchemy import func
 
+        # 1. Get prices from CostingLineItem
         result = session.query(
             func.avg(CostingLineItem.unit_price).label('avg_price'),
             func.min(CostingLineItem.unit_price).label('min_price'),
@@ -2125,13 +2236,43 @@ def get_average_item_price(item_code: str, item_name: str = None) -> Dict[str, A
                 CostingLineItem.unit_price.isnot(None)
             ).first()
 
+        # 2. Get prices from EstimationLines
+        estimation_prices = []
+        estimation_items = session.query(EstimationLines).filter(
+            EstimationLines.std_item_code == item_code
+        ).all()
+
+        # Fallback: search by item_name if no results by code
+        if not estimation_items and item_name:
+            estimation_items = session.query(EstimationLines).filter(
+                EstimationLines.item_name.ilike(f"%{item_name}%")
+            ).all()
+
+        for est_item in estimation_items:
+            if est_item.last_purchase_price and est_item.last_purchase_price > 0:
+                estimation_prices.append(float(est_item.last_purchase_price))
+            if est_item.average_price and est_item.average_price > 0:
+                estimation_prices.append(float(est_item.average_price))
+
+        # 3. Combine results from both sources
+        all_prices = []
         if result and result.count > 0:
+            # Get individual prices from CostingLineItem
+            costing_prices = session.query(CostingLineItem.unit_price).filter(
+                CostingLineItem.item_code == item_code,
+                CostingLineItem.unit_price.isnot(None)
+            ).all()
+            all_prices.extend([float(p[0]) for p in costing_prices if p[0] is not None])
+
+        all_prices.extend(estimation_prices)
+
+        if all_prices:
             return {
                 "item_code": item_code,
-                "average_price": round(result.avg_price, 2) if result.avg_price else None,
-                "min_price": round(result.min_price, 2) if result.min_price else None,
-                "max_price": round(result.max_price, 2) if result.max_price else None,
-                "sample_count": result.count
+                "average_price": round(sum(all_prices) / len(all_prices), 2),
+                "min_price": round(min(all_prices), 2),
+                "max_price": round(max(all_prices), 2),
+                "sample_count": len(all_prices)
             }
         else:
             return {

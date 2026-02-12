@@ -19,9 +19,10 @@ from utils.langfuse_tracing import trace_agent
 
 
 def _get_generated_file_path(job_id: str):
-    """Return the costing sheet file path if it exists on disk."""
-    file_path = os.path.join(config.TEMP_DOWNLOADS_DIR, f"costing_{job_id}.xlsx")
-    return file_path if os.path.exists(file_path) else None
+    """Return the costing sheet filename if it exists on disk."""
+    filename = f"costing_{job_id}.xlsx"
+    file_path = os.path.join(config.TEMP_DOWNLOADS_DIR, filename)
+    return filename if os.path.exists(file_path) else None
 
 
 def _extract_edit_parameters(user_message: str, state: AgentState) -> dict:
@@ -32,6 +33,8 @@ def _extract_edit_parameters(user_message: str, state: AgentState) -> dict:
         "last_action": state.get("last_action")
     }
 
+    print(f"[DEBUG extraction] user_message: {user_message!r}, last_job_id: {last_job_id}, context: {context}")
+
     prompt = EDIT_JOB_EXTRACTION_PROMPT.format(
         user_message=user_message,
         last_job_id=last_job_id,
@@ -41,6 +44,7 @@ def _extract_edit_parameters(user_message: str, state: AgentState) -> dict:
     try:
         response = llm.invoke([{"role": "user", "content": prompt}])
         content = response.content
+        print(f"[DEBUG extraction] LLM raw response: {content!r}")
 
         # Extract JSON from markdown code blocks if present
         if "```json" in content:
@@ -49,14 +53,23 @@ def _extract_edit_parameters(user_message: str, state: AgentState) -> dict:
             content = content.split("```")[1].split("```")[0].strip()
 
         params = json.loads(content)
+        print(f"[DEBUG extraction] Parsed params: {params}")
+
+        # Normalize field name: LLM may return 'operation_type' but code expects 'operation'
+        if 'operation_type' in params and 'operation' not in params:
+            params['operation'] = params.pop('operation_type')
+            print(f"[DEBUG extraction] Normalized 'operation_type' to 'operation': {params.get('operation')}")
 
         # Use context if job_id not provided
         if not params.get("job_id") and last_job_id != "Not specified":
             params["job_id"] = last_job_id
+            print(f"[DEBUG extraction] Added job_id from context: {last_job_id}")
 
+        print(f"[DEBUG extraction] Final params: {params}")
         return params
     except Exception as e:
         print(f"[EditJobAgent] Extraction error: {e}")
+        print(f"[DEBUG extraction] Error details - content was: {content if 'content' in locals() else 'N/A'}")
         return {}
 
 
@@ -71,79 +84,107 @@ def _sanitize_price(value) -> float | None:
         return None
 
 
+def _match_item_with_llm(user_message: str, items: list) -> dict:
+    """Use LLM to match user's description to one of the items in the list."""
+    items_description = "\n".join([
+        f"{i+1}. {item['item_name']} (Code: {item.get('item_code') or 'N/A'})"
+        for i, item in enumerate(items)
+    ])
+
+    prompt = f"""The user is trying to select an item from this list:
+
+{items_description}
+
+Their message is: "{user_message}"
+
+If the message is a number (1, 2, 3, etc.), return that number.
+If the message describes an item from the list, return the number (1-{len(items)}) that best matches.
+If you cannot determine a match, return "NONE".
+
+Return ONLY the number or "NONE", nothing else."""
+
+    try:
+        response = llm.invoke([{"role": "user", "content": prompt}])
+        match_result = response.content.strip().upper()
+        print(f"[DEBUG LLM match] LLM response: {match_result!r}")
+
+        if match_result == "NONE":
+            return None
+
+        if match_result.isdigit():
+            idx = int(match_result) - 1
+            if 0 <= idx < len(items):
+                return items[idx]
+
+        return None
+    except Exception as e:
+        print(f"[DEBUG LLM match] Error: {e}")
+        return None
+
+
 def _handle_disambiguation_response(user_message: str, pending: dict, job_id: str) -> dict:
     """Handle user's selection from a disambiguation prompt."""
+    print(f"[DEBUG disambiguation] user_message: {user_message!r}, pending: {pending}, job_id: {job_id}")
     selection = user_message.strip()
     items = pending.get("items", [])
     selected_item = None
+    print(f"[DEBUG disambiguation] selection: {selection!r}, items count: {len(items)}")
 
     # Try numeric selection (1, 2, 3...)
     if selection.isdigit():
         idx = int(selection) - 1
+        print(f"[DEBUG disambiguation] Numeric selection detected, idx: {idx}")
         if 0 <= idx < len(items):
             selected_item = items[idx]
+            print(f"[DEBUG disambiguation] Selected item by index: {selected_item}")
 
     # Try direct ID match
     if not selected_item:
+        print(f"[DEBUG disambiguation] Trying direct ID match")
         for item in items:
             if str(item.get("id", "")) == selection:
                 selected_item = item
+                print(f"[DEBUG disambiguation] Selected item by ID: {selected_item}")
                 break
 
+    # Try LLM-based matching if user provided a description
     if not selected_item:
+        print(f"[DEBUG disambiguation] Trying LLM-based item matching")
+        selected_item = _match_item_with_llm(user_message, items)
+        if selected_item:
+            print(f"[DEBUG disambiguation] LLM matched item: {selected_item}")
+
+    if not selected_item:
+        print(f"[DEBUG disambiguation] No valid selection found, asking user to try again")
         return {
-            "messages": [AIMessage(content=f"Please select a valid item number (1-{len(items)}) from the list above.")],
+            "messages": [AIMessage(content=f"I couldn't identify which item you meant. Please select by number (1-{len(items)}) from the list above.")],
             "last_mentioned_job_id": job_id,
             "pending_disambiguation": pending,
         }
 
     disambiguation_type = pending.get("disambiguation_type")
+    print(f"[DEBUG disambiguation] disambiguation_type: {disambiguation_type}")
 
-    # Legacy "add_item_search" - redirect to new flow for quantity and confirmation
+    # Legacy "add_item_search" - no longer supported, reset state
     if disambiguation_type == "add_item_search":
-        items = pending.get("items", [])
-        selection = user_message.strip()
-
-        selected_item = None
-        if selection.isdigit():
-            idx = int(selection) - 1
-            if 0 <= idx < len(items):
-                selected_item = items[idx]
-
-        if not selected_item:
-            for item in items:
-                if str(item.get("id", "")) == selection:
-                    selected_item = item
-                    break
-
-        if not selected_item:
-            return {
-                "messages": [AIMessage(content=f"Please select a valid item number (1-{len(items)}) from the list above.")],
-                "last_mentioned_job_id": job_id,
-                "pending_disambiguation": pending,
-            }
-
-        # Now ask for quantity instead of adding directly
+        print(f"[DEBUG disambiguation] Legacy add_item_search detected, resetting")
         return {
             "messages": [AIMessage(content=
-                f"How many units of **{selected_item['item_name']}** would you like to add?\n"
-                f"(Enter a number, or type 'cancel' to go back)"
+                "That operation timed out. Let's start fresh.\n\n"
+                "What would you like to do with this job?"
             )],
             "last_mentioned_job_id": job_id,
-            "pending_disambiguation": {
-                "agent": "edit_job",
-                "disambiguation_type": "quantity_input",
-                "job_id": job_id,
-                "selected_product": selected_item,
-            },
+            "pending_disambiguation": None,
         }
 
     elif disambiguation_type == "remove_item":
+        print(f"[DEBUG disambiguation] Handling remove_item for selected_item: {selected_item}")
         # User selected which item to remove
         result = tools.remove_line_item_from_job(
             job_id=job_id,
             item_identifier=str(selected_item["id"])
         )
+        print(f"[DEBUG disambiguation] Remove result: {result}")
 
         if result.get("success"):
             response_msg = (
@@ -153,12 +194,13 @@ def _handle_disambiguation_response(user_message: str, pending: dict, job_id: st
         else:
             response_msg = f"❌ Failed to remove item: {result.get('error', 'Unknown error')}"
 
+        print(f"[DEBUG disambiguation] Returning from remove_item disambiguation")
         return {
             "messages": [AIMessage(content=response_msg)],
             "last_mentioned_job_id": job_id,
             "last_action": "remove_item",
             "pending_disambiguation": None,
-            "generated_file": _get_generated_file_path(job_id),
+            "generated_file": result.get("file_path"),
         }
 
     elif disambiguation_type == "update_item":
@@ -201,7 +243,7 @@ def _handle_disambiguation_response(user_message: str, pending: dict, job_id: st
             "last_mentioned_job_id": job_id,
             "last_action": "update_item",
             "pending_disambiguation": None,
-            "generated_file": _get_generated_file_path(job_id),
+            "generated_file": result.get("file_path"),
         }
 
     # Unknown disambiguation type
@@ -247,7 +289,7 @@ def _handle_add_item_custom_confirm(pending: dict, job_id: str) -> dict:
         "last_mentioned_job_id": job_id,
         "last_action": "add_item",
         "pending_disambiguation": None,
-        "generated_file": _get_generated_file_path(job_id),
+        "generated_file": result.get("file_path"),
     }
 
 
@@ -258,9 +300,11 @@ def edit_job_node(state: AgentState):
     Supports interactive job selection, product search, quantity input, and confirmation.
     """
     user_message = state["messages"][-1].content if state.get("messages") else ""
+    print(f"[DEBUG edit_job_node] user_message: {user_message!r}")
 
     # Check if disambiguation/interactive flow is pending
     pending = state.get("pending_disambiguation")
+    print(f"[DEBUG edit_job_node] pending_disambiguation: {pending}")
     if pending and pending.get("agent") == "edit_job":
         disambiguation_type = pending.get("disambiguation_type")
         job_id = pending.get("job_id")
@@ -597,7 +641,7 @@ def edit_job_node(state: AgentState):
                     "last_mentioned_job_id": job_id,
                     "last_action": "add_item",
                     "pending_disambiguation": None,
-                    "generated_file": _get_generated_file_path(job_id),
+                    "generated_file": result.get("file_path"),
                 }
             else:
                 return {
@@ -619,19 +663,30 @@ def edit_job_node(state: AgentState):
                 }
 
         # Handle item selection from disambiguation list (for edit/remove operations)
-        # First check if the LLM extracted a new operation — if so, don't treat as disambiguation
-        params = _extract_edit_parameters(user_message, state)
-        if params and params.get("operation"):
-            # User started a new operation, clear disambiguation and proceed normally
-            pending = None
-        else:
-            return _handle_disambiguation_response(user_message, pending, job_id)
+        # Only allow cancellation during disambiguation, not new operations
+        user_lower = user_message.strip().lower()
+        print(f"[DEBUG edit_job_node] Checking for cancel keywords, user_lower: {user_lower!r}")
+        if user_lower in ("cancel", "back", "exit", "quit", "stop"):
+            print(f"[DEBUG edit_job_node] Cancel detected, clearing pending_disambiguation")
+            return {
+                "messages": [AIMessage(content="Cancelled. What else can I help you with?")],
+                "last_mentioned_job_id": job_id,
+                "pending_disambiguation": None,
+            }
+
+        print(f"[DEBUG edit_job_node] Calling _handle_disambiguation_response")
+        return _handle_disambiguation_response(user_message, pending, job_id)
 
     # Extract parameters (if not already extracted above)
     if pending is None or not pending:
         params = _extract_edit_parameters(user_message, state)
+        print(f"[DEBUG edit_job_node] Extracted params: {params}")
+    else:
+        params = {}
+        print(f"[DEBUG edit_job_node] Skipping extraction, pending exists: {pending}")
 
     # Check if this is a generic "edit job" request without details
+    print(f"[DEBUG edit_job_node] Checking params: params={params}, operation={params.get('operation') if params else None}")
     if not params or not params.get("operation"):
         # Check if user is saying they want to edit a job
         user_lower = user_message.lower()
@@ -720,8 +775,23 @@ def edit_job_node(state: AgentState):
                             f"- Status: {result.get('price_status')}\n\n"
                             f"The costing sheet has been regenerated."
                         )
+
+                        return {
+                            "messages": [AIMessage(content=response_msg)],
+                            "last_mentioned_job_id": job_id,
+                            "last_action": "add_item",
+                            "pending_disambiguation": None,
+                            "generated_file": result.get("file_path"),
+                        }
                     else:
                         response_msg = f"❌ Failed to add item: {result.get('error', 'Unknown error')}"
+
+                        return {
+                            "messages": [AIMessage(content=response_msg)],
+                            "last_mentioned_job_id": job_id,
+                            "last_action": "add_item",
+                            "pending_disambiguation": None,
+                        }
 
                 else:
                     # Multiple matches — ask user to pick (will then ask for quantity and confirmation)
@@ -778,52 +848,132 @@ def edit_job_node(state: AgentState):
 
     elif operation == "remove_item":
         item_identifier = params.get("item_identifier")
+        print(f"[DEBUG remove_item] item_identifier received: {item_identifier!r}, job_id: {job_id}")
+
         if not item_identifier:
             response_msg = "Please specify which item to remove (by name or item number)."
         else:
-            # Use disambiguation-aware matching
-            match_result = tools.find_matching_line_items(job_id, item_identifier)
+            # If user provided an ID, remove directly
+            is_digit = str(item_identifier).isdigit()
+            print(f"[DEBUG remove_item] is_digit: {is_digit}")
 
-            if match_result["match"] == "multiple":
-                items = match_result["items"]
-                options = "\n".join([
-                    f"  {i+1}. **{item['item_name']}** (ID: {item['id']}, "
-                    f"Code: {item.get('item_code') or 'N/A'}, Qty: {item.get('quantity', 'N/A')})"
-                    for i, item in enumerate(items)
-                ])
-                response_msg = (
-                    f"I found **{len(items)} items** matching '**{item_identifier}**' in job **{job_id}**:\n\n"
-                    f"{options}\n\n"
-                    f"Which item would you like to remove? Reply with the number (1-{len(items)})."
-                )
-                return {
-                    "messages": [AIMessage(content=response_msg)],
-                    "last_mentioned_job_id": job_id,
-                    "pending_disambiguation": {
-                        "agent": "edit_job",
-                        "disambiguation_type": "remove_item",
-                        "items": items,
-                        "job_id": job_id,
-                    },
-                }
-
-            elif match_result["match"] == "exact":
-                item = match_result["items"][0]
+            if is_digit:
+                print(f"[DEBUG remove_item] Removing by ID: {item_identifier}")
                 result = tools.remove_line_item_from_job(
                     job_id=job_id,
-                    item_identifier=str(item["id"])
+                    item_identifier=str(item_identifier)
                 )
+                print(f"[DEBUG remove_item] Removal result: {result}")
 
                 if result.get("success"):
                     response_msg = (
-                        f"✅ Removed **{item['item_name']}** from job **{job_id}**\n\n"
+                        f"✅ Removed item from job **{job_id}**\n\n"
                         f"The costing sheet has been updated."
                     )
                 else:
                     response_msg = f"❌ Failed to remove item: {result.get('error', 'Unknown error')}"
 
-            else:
+                return {
+                    "messages": [AIMessage(content=response_msg)],
+                    "last_mentioned_job_id": job_id,
+                    "last_action": "remove_item",
+                    "pending_disambiguation": None,
+                    "generated_file": result.get("file_path"),
+                }
+
+            # Name-based search: Get all line items for the job first
+            print(f"[DEBUG remove_item] Performing name-based search for: {item_identifier}")
+            match_result = tools.find_matching_line_items(job_id, item_identifier)
+            print(f"[DEBUG remove_item] match_result: {match_result}")
+
+            # If no matches with basic search, try LLM-based semantic matching on ALL job items
+            if match_result["match"] == "none":
+                print(f"[DEBUG remove_item] No basic matches, trying LLM semantic matching")
+                # Get all items for this job
+                job_statuses = tools.get_costing_job_statuses(user_id=state.get("user_id", 1), job_id=job_id)
+                if job_statuses and len(job_statuses) > 0:
+                    all_items = job_statuses[0].get("line_items", [])
+                    if all_items:
+                        print(f"[DEBUG remove_item] Found {len(all_items)} total items in job, trying LLM match")
+                        # Format items for LLM matching
+                        items_for_matching = [{
+                            "id": item["id"],
+                            "item_name": item["item_name"],
+                            "item_code": item.get("item_code"),
+                            "quantity": item.get("quantity"),
+                            "unit_price": item.get("unit_price"),
+                            "price_status": item.get("price_status")
+                        } for item in all_items]
+
+                        matched_item = _match_item_with_llm(item_identifier, items_for_matching)
+                        if matched_item:
+                            print(f"[DEBUG remove_item] LLM found semantic match: {matched_item}")
+                            match_result = {"match": "exact", "items": [matched_item]}
+                        else:
+                            print(f"[DEBUG remove_item] LLM could not find match")
+
+            if match_result["match"] == "none":
+                print(f"[DEBUG remove_item] No matches found (after LLM attempt)")
                 response_msg = f"❌ No item matching '**{item_identifier}**' found in job **{job_id}**."
+
+                return {
+                    "messages": [AIMessage(content=response_msg)],
+                    "last_mentioned_job_id": job_id,
+                    "last_action": "remove_item",
+                    "pending_disambiguation": None,
+                }
+
+            items = match_result["items"]
+            print(f"[DEBUG remove_item] Found {len(items)} matching items")
+
+            # If exact match (single item), remove directly
+            if match_result["match"] == "exact" and len(items) == 1:
+                print(f"[DEBUG remove_item] Exact match with single item, removing directly")
+                result = tools.remove_line_item_from_job(
+                    job_id=job_id,
+                    item_identifier=str(items[0]["id"])
+                )
+                print(f"[DEBUG remove_item] Direct removal result: {result}")
+
+                if result.get("success"):
+                    response_msg = (
+                        f"✅ Removed **{items[0]['item_name']}** from job **{job_id}**\n\n"
+                        f"The costing sheet has been updated."
+                    )
+                else:
+                    response_msg = f"❌ Failed to remove item: {result.get('error', 'Unknown error')}"
+
+                return {
+                    "messages": [AIMessage(content=response_msg)],
+                    "last_mentioned_job_id": job_id,
+                    "last_action": "remove_item",
+                    "pending_disambiguation": None,
+                    "generated_file": result.get("file_path"),
+                }
+
+            # Multiple matches - show disambiguation list
+            print(f"[DEBUG remove_item] Multiple matches, presenting disambiguation")
+            options = "\n".join([
+                f"  {i+1}. **{item['item_name']}** (ID: {item['id']}, "
+                f"Code: {item.get('item_code') or 'N/A'}, Qty: {item.get('quantity', 'N/A')})"
+                for i, item in enumerate(items)
+            ])
+            response_msg = (
+                f"I found **{len(items)} items** matching '**{item_identifier}**' in job **{job_id}**:\n\n"
+                f"{options}\n\n"
+                f"Which item would you like to remove? Reply with the number (1-{len(items)})."
+            )
+            print(f"[DEBUG remove_item] Setting pending_disambiguation with {len(items)} items")
+            return {
+                "messages": [AIMessage(content=response_msg)],
+                "last_mentioned_job_id": job_id,
+                "pending_disambiguation": {
+                    "agent": "edit_job",
+                    "disambiguation_type": "remove_item",
+                    "items": items,
+                    "job_id": job_id,
+                },
+            }
 
     elif operation == "update_item":
         item_identifier = params.get("item_identifier")
@@ -900,8 +1050,23 @@ def edit_job_node(state: AgentState):
                 else:
                     response_msg = f"❌ Failed to update item: {result.get('error', 'Unknown error')}"
 
+                return {
+                    "messages": [AIMessage(content=response_msg)],
+                    "last_mentioned_job_id": job_id,
+                    "last_action": "update_item",
+                    "pending_disambiguation": None,
+                    "generated_file": result.get("file_path"),
+                }
+
             else:
                 response_msg = f"❌ No item matching '**{item_identifier}**' found in job **{job_id}**."
+
+                return {
+                    "messages": [AIMessage(content=response_msg)],
+                    "last_mentioned_job_id": job_id,
+                    "last_action": "update_item",
+                    "pending_disambiguation": None,
+                }
 
     elif operation == "update_description":
         new_description = params.get("new_description")
@@ -921,6 +1086,13 @@ def edit_job_node(state: AgentState):
                 )
             else:
                 response_msg = f"❌ Failed to update description: {result.get('error', 'Unknown error')}"
+            return {
+                "messages": [AIMessage(content=response_msg)],
+                "last_mentioned_job_id": job_id,
+                "last_action": "update_description",
+                "pending_disambiguation": None,
+                "generated_file": result.get("file_path"),
+            }
 
     elif operation == "search_product":
         search_query = params.get("search_query", "")

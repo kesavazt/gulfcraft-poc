@@ -37,7 +37,7 @@ except ImportError:
 # Import pdf_extractor for OCR
 extract_line_items_from_pdf = None
 try:
-    from pdf_extractor import extract_line_items_from_pdf
+    from services.pdf_extractor import extract_line_items_from_pdf
     PDF_EXTRACTOR_AVAILABLE = True
 except ImportError:
     PDF_EXTRACTOR_AVAILABLE = False
@@ -175,12 +175,18 @@ class EmailMonitor:
 
             # Filter messages by subject keywords (Python-side filtering)
             keywords = ['Price Quotation Request', 'JOB-', 'COST-']
+
+            print(f"[EmailMonitor] Fetched {len(all_messages)} total unread emails")
+            for i, msg in enumerate(all_messages):
+                subj = msg.get('subject', '(no subject)')
+                print(f"  [{i+1}] Subject: {subj}")
+
             messages = [
                 msg for msg in all_messages
                 if any(keyword in msg.get('subject', '') for keyword in keywords)
             ]
 
-            print(f"[EmailMonitor] Found {len(messages)} unread quotation-related emails (from {len(all_messages)} total unread)")
+            print(f"[EmailMonitor] Filtered to {len(messages)} quotation-related emails (matching keywords: {keywords})")
 
             for msg in messages:
                 try:
@@ -200,15 +206,26 @@ class EmailMonitor:
                 PendingQuoteRequest.status == "pending"
             ).all()
 
-            return [{
+            result = [{
                 "id": req.id,
                 "job_id": req.job_id,
                 "item_name": req.item_name,
                 "vendor_email": req.vendor_email,
                 "costing_request_id": req.costing_request_id
             } for req in requests_list]
+
+            if result:
+                print(f"[EmailMonitor] Retrieved {len(result)} pending quote requests from DB:")
+                for req in result:
+                    print(f"  - ID: {req['id']}, Job: {req['job_id']}, Item: {req['item_name']}, Vendor: {req['vendor_email']}")
+            else:
+                print(f"[EmailMonitor] No pending quote requests found in DB")
+
+            return result
         except Exception as e:
             print(f"[EmailMonitor] DB Error: {e}")
+            import traceback
+            traceback.print_exc()
             return []
         finally:
             session.close()
@@ -219,33 +236,45 @@ class EmailMonitor:
         subject = msg.get("subject", "")
         from_addr = msg.get("from", {}).get("emailAddress", {}).get("address", "unknown")
 
-        print(f"[EmailMonitor] Processing email from: {from_addr}")
+        print(f"\n[EmailMonitor] ========== Processing Email ==========")
+        print(f"[EmailMonitor] Message ID: {msg_id}")
+        print(f"[EmailMonitor] From: {from_addr}")
         print(f"[EmailMonitor] Subject: {subject}")
 
         # Extract job_id and item_name from subject
         job_id, item_name = self._parse_subject(subject)
 
         if not job_id:
-            print(f"[EmailMonitor] Could not extract job_id from subject: {subject}")
+            print(f"[EmailMonitor] ✗ SKIPPING: Could not extract job_id from subject")
+            print(f"[EmailMonitor] ✗ Marking as read without processing")
             self._mark_as_read(msg_id)
+            print(f"[EmailMonitor] ========================================\n")
             return
 
         print(f"[EmailMonitor] Extracted job_id: {job_id}, item_name: {item_name}")
+        print(f"[EmailMonitor] Checking against {len(pending_requests)} pending requests")
 
-        # Find matching pending request
+        # Find matching pending request - prioritize job_id match
         matching_request = None
         for req in pending_requests:
+            print(f"[EmailMonitor] Comparing with: job_id={req['job_id']}, item={req['item_name']}, vendor={req.get('vendor_email', 'N/A')}")
+
             if req["job_id"] == job_id:
+                print(f"[EmailMonitor] ✓ Job ID matched: {job_id}")
+                # If item_name also matches, prioritize this match
                 if item_name and req["item_name"].lower() in item_name.lower():
                     matching_request = req
+                    print(f"[EmailMonitor] ✓ Item name also matched: {item_name}")
                     break
+                # Otherwise, keep this as a candidate match
                 elif not matching_request:
                     matching_request = req
+                    print(f"[EmailMonitor] ✓ Using as candidate match (no item name in subject)")
 
         if matching_request:
-            print(f"[EmailMonitor] Found matching pending request for item: {matching_request['item_name']}")
+            print(f"[EmailMonitor] ✓ MATCHED: job_id={matching_request['job_id']}, item={matching_request['item_name']}, id={matching_request['id']}")
         else:
-            print(f"[EmailMonitor] No pending request found for job_id: {job_id} (will still extract data)")
+            print(f"[EmailMonitor] ✗ No pending request found for job_id: {job_id} from sender: {from_addr}")
 
         default_item_name = item_name or "Unknown Item"
         if matching_request:
@@ -353,15 +382,19 @@ class EmailMonitor:
                 timeout=15
             )
             resp.raise_for_status()
+            print(f"[EmailMonitor] ✓ Marked email {message_id[:20]}... as read")
         except Exception as e:
-            print(f"[EmailMonitor] Error marking email as read: {e}")
+            print(f"[EmailMonitor] ✗ Error marking email as read: {e}")
 
     def _parse_subject(self, subject: str) -> tuple:
         """Parse job_id and item_name from email subject."""
         job_id = None
         item_name = None
 
+        print(f"[EmailMonitor] Parsing subject: '{subject}'")
+
         if not subject:
+            print(f"[EmailMonitor] Subject is empty")
             return job_id, item_name
 
         # Remove RE:, FW:, Fwd: prefixes
@@ -369,16 +402,25 @@ class EmailMonitor:
         for prefix in ["RE:", "Re:", "re:", "FW:", "Fw:", "fw:", "Fwd:", "FWD:"]:
             clean_subject = clean_subject.replace(prefix, "").strip()
 
+        print(f"[EmailMonitor] After removing prefixes: '{clean_subject}'")
+
         # Split by " - "
         parts = clean_subject.split(" - ")
+        print(f"[EmailMonitor] Split into {len(parts)} parts: {parts}")
 
         for i, part in enumerate(parts):
             part = part.strip()
+            print(f"[EmailMonitor] Checking part {i}: '{part}'")
             if part.startswith("JOB-") or part.startswith("COST-"):
                 job_id = part
+                print(f"[EmailMonitor] Found job_id: {job_id}")
                 if i + 1 < len(parts):
                     item_name = parts[i + 1].strip()
+                    print(f"[EmailMonitor] Found item_name: {item_name}")
                 break
+
+        if not job_id:
+            print(f"[EmailMonitor] ✗ Could not find job_id in subject (no part starts with JOB- or COST-)")
 
         return job_id, item_name
 
