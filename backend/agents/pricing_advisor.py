@@ -117,6 +117,7 @@ def pricing_advisor_node(state: AgentState):
                     "pending_disambiguation": {
                         "agent": "pricing_advisor",
                         "items": results[:10],
+                        "last_search_query": search_query  # Store for refinement/pagination
                     },
                     "last_action": "product_search",
                 }
@@ -127,11 +128,54 @@ def pricing_advisor_node(state: AgentState):
                     "last_action": "product_search"
                 }
 
-        # Handle case where user is selecting from search results
+        # Handle case where user is selecting from search results OR refining search
         selection = user_message.strip()
         items = pending.get("items", [])
         selected_item = None
 
+        # Check if user is refining their search instead of selecting
+        user_lower = selection.lower()
+        prev_query = pending.get("last_search_query", "")
+
+        # Detect refinement patterns: "show me more", brand names, additional criteria
+        is_show_more = "show" in user_lower and "more" in user_lower
+        is_refinement = (
+            is_show_more or
+            (not selection.isdigit() and len(selection.split()) >= 1 and len(selection) > 3)
+        )
+
+        # If user is refining the search, execute new search
+        if is_refinement and not selection.isdigit():
+            if is_show_more:
+                # Increase limit to show more results
+                search_result = tools.search_products_by_description(prev_query, limit=20)
+                response_msg_prefix = f"🔎 Showing **more results** for '**{prev_query}**'."
+            else:
+                # User is refining with additional criteria (e.g., brand name)
+                refined_query = selection
+                search_result = tools.search_products_by_description(refined_query, limit=10)
+                response_msg_prefix = f"🔎 Found products matching '**{refined_query}**'."
+
+            if search_result.get("found"):
+                results = search_result["results"]
+                response_msg = f"{response_msg_prefix} Please select one to see detailed pricing."
+
+                return {
+                    "messages": [AIMessage(content=response_msg)],
+                    "pending_disambiguation": {
+                        "agent": "pricing_advisor",
+                        "items": results[:20],  # Show more results
+                        "last_search_query": refined_query if not is_show_more else prev_query
+                    },
+                    "last_action": "product_search",
+                }
+            else:
+                return {
+                    "messages": [AIMessage(content=f"No products found matching your search. Please try again or select from the original list (1-{len(items)}).")],
+                    "pending_disambiguation": pending,
+                }
+
+        # Handle numeric selection
         if selection.isdigit():
             idx = int(selection) - 1
             if 0 <= idx < len(items):
@@ -139,7 +183,7 @@ def pricing_advisor_node(state: AgentState):
 
         if not selected_item:
             return {
-                "messages": [AIMessage(content=f"Please select a valid number (1-{len(items)}) from the list above.")],
+                "messages": [AIMessage(content=f"Please select a valid number (1-{len(items)}) from the list above, or refine your search with additional criteria.")],
                 "pending_disambiguation": pending,
             }
 
@@ -234,6 +278,7 @@ def pricing_advisor_node(state: AgentState):
                     "pending_disambiguation": {
                         "agent": "pricing_advisor",
                         "items": results[:10],
+                        "last_search_query": query_text  # Store for refinement/pagination
                     },
                     "last_action": "product_search",
                 }
@@ -257,6 +302,7 @@ def pricing_advisor_node(state: AgentState):
                             "pending_disambiguation": {
                                 "agent": "pricing_advisor",
                                 "items": products[:10],
+                                "last_search_query": item_name
                             },
                             "last_action": "price_history",
                         }
@@ -309,6 +355,7 @@ def pricing_advisor_node(state: AgentState):
                         "pending_disambiguation": {
                             "agent": "pricing_advisor",
                             "items": products[:10],
+                            "last_search_query": item_name
                         },
                         "last_action": "average_price",
                     }
@@ -357,6 +404,7 @@ def pricing_advisor_node(state: AgentState):
                         "pending_disambiguation": {
                             "agent": "pricing_advisor",
                             "items": products[:10],
+                            "last_search_query": item_name
                         },
                         "last_action": "price_comparison",
                     }
