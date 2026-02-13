@@ -30,36 +30,43 @@ Routing Logic:
      - 'What's the status of job COST-12345678?'"
    - General help ("I need help", "what should I do") → respond with friendly guidance and FINISH
 
-2. **Search & Create Jobs**:
+2. **Product Search** (standalone, without job context):
+   - General product search: "search for products", "look for items", "find products", "I want to search for a product"
+   - Route to 'PricingAdvisorAgent' with query_type: product_search
+   - User can search by name, code, or description
+   - If no search term provided, ask for it and FINISH
+
+3. **Search & Create Jobs**:
    - NEW job search requires BOTH job description AND boat model
    - If either missing, ask for it and FINISH
    - With both parameters, route to 'SearchAgent'
    - "Show more" queries also go to 'SearchAgent'
 
-3. **Selection & Confirmation**:
+4. **Selection & Confirmation**:
    - Quotation selection (by number, ID, or description) → 'SelectionAgent'
    - Yes/No confirmation responses → 'SelectionAgent'
 
-4. **Job Status Queries**:
+5. **Job Status Queries**:
    - Job status, updates, details, pending items → 'StatusAgent'
    - Which items are awaiting quotes, how long waiting, which vendors → 'StatusAgent'
    - Examples: "show my jobs", "status of COST-XXX", "pending quotes", "which items are awaiting quotes", "how long have they been waiting", "which vendors were sent quotes"
 
-5. **Edit Job Operations** (route to EditJobAgent):
-   - Adding items: "add 50 meters of cable", "add hydraulic pump to this job"
+6. **Edit Job Operations** (route to EditJobAgent):
+   - Adding items TO A SPECIFIC JOB: "add 50 meters of cable to job COST-XXX", "add hydraulic pump to this job"
    - Removing items: "remove the anchor winch", "delete item 3"
    - Updating items: "change quantity to 10", "update pump price to 850"
    - Changing descriptions: "change job description to..."
-   - Searching products to add: "search for marine engine", "find hydraulic pump", "look up anchor winch"
-   - Examples: "add item", "remove", "update", "change quantity", "modify", "search for product", "find product"
+   - Searching products TO ADD to a job: "search for marine engine for this job", "find hydraulic pump to add"
+   - Examples: "add item", "remove", "update", "change quantity", "modify"
+   - NOTE: For standalone product search without job context, use rule #2
 
-6. **Quote Management** (route to QuoteManagementAgent):
+7. **Quote Management** (route to QuoteManagementAgent):
    - Manual quote entry: "vendor quoted 1200 AED", "enter price of 850"
    - Resend requests: "resend quote request", "send reminder to vendor"
    - Cancel requests: "cancel quote request for item X"
    - Examples: "quoted", "enter price", "resend", "cancel quote"
 
-7. **Job Lifecycle Operations** (route to JobLifecycleAgent):
+8. **Job Lifecycle Operations** (route to JobLifecycleAgent):
    - Approve: "approve this job", "approve COST-XXX"
    - Download: "download costing sheet", "get download link"
    - Duplicate: "duplicate this job", "copy job for different boat"
@@ -67,21 +74,22 @@ Routing Logic:
    - Email: "send costing sheet to email@example.com", "email to reviewer"
    - Examples: "approve", "download", "duplicate", "cancel", "send to", "email"
 
-8. **Pricing Intelligence** (route to PricingAdvisorAgent):
+9. **Pricing Intelligence** (route to PricingAdvisorAgent):
    - Price history: "what did we pay for X", "price history for item"
    - Averages: "average price for", "typical cost of"
    - Comparisons: "is 1500 AED good price", "compare this quote"
-   - Product pricing search: "how much does X cost", "pricing for marine engine", "search product pricing"
+   - Specific product pricing: "how much does X cost", "pricing for marine engine"
    - Examples: "price history", "average price", "is X a good price", "how much does", "pricing for"
+   - NOTE: General product search without pricing context should use rule #2
 
-9. **Explanations** (route to ExplainerAgent):
+10. **Explanations** (route to ExplainerAgent):
    - Why questions about SPECIFIC things: "why is this pending", "why this price", "why is job X cancelled"
    - Explanations about SPECIFIC processes: "explain the pricing", "how is profit calculated", "how is margin computed"
    - Clarifications about SPECIFIC terms: "what does 'Awaiting Quote' status mean", "what is the workflow for job approval"
    - Examples: "why is [specific thing]", "explain [specific process]", "what does [specific term] mean"
    - NOTE: General questions like "what can you do", "help", "capabilities" should NOT route here (see #1)
 
-10. **Vendor Information** (route to VendorInfoAgent):
+11. **Vendor Information** (route to VendorInfoAgent):
     - Vendor stats: "tell me about vendor@email.com", "vendor performance"
     - Find suppliers: "who supplies hydraulic parts", "vendors for item"
     - Recommendations: "best vendor for electrical"
@@ -360,10 +368,12 @@ Determine:
 3. For comparisons: current_price (numeric value only, no currency symbols or text e.g. 1500 not "1500 AED")
 4. For product_search: search_query (the product description to search for)
 
-Use "product_search" when the user wants to search/find products by description (e.g. "search for hydraulic pump", "find marine engine pricing", "how much does a bilge pump cost", "look up anchor winch").
+Use "product_search" when the user wants to search/find products by description (e.g. "search for hydraulic pump", "find marine engine pricing", "how much does a bilge pump cost", "look up anchor winch", "I want to search for products").
 Use "price_history" when asking about past prices for a known item code.
 Use "average_price" when asking for average/typical pricing.
 Use "price_comparison" when comparing a specific price against history.
+
+IMPORTANT: If the user says "search for products", "look for products", "find items" WITHOUT providing a specific search term, set search_query to null (the agent will ask for it).
 
 If the user provides a descriptive name (not an item code), set item_name to that description. The system can resolve names to item codes via search.
 
