@@ -400,6 +400,47 @@ def edit_job_node(state: AgentState):
                     "last_viewed_product": None  # Clear
                 }
 
+        # Handle job ID input when operation was already determined
+        if disambiguation_type == "job_id_needed":
+            job_id_match = re.match(r'^(COST-[A-Z0-9]{8})$', user_message.strip().upper())
+            if job_id_match:
+                job_id = job_id_match.group(1)
+                intended_operation = pending.get("intended_operation")
+                params = pending.get("params", {})
+                params["job_id"] = job_id  # Add job ID to params
+
+                # Check if this is add_item with last_viewed_product
+                last_viewed = state.get("last_viewed_product")
+                if intended_operation == "add_item" and last_viewed:
+                    # User wants to add the product they just viewed
+                    item_name = last_viewed.get("item_name")
+                    quantity = params.get("quantity")
+
+                    # Ask for quantity if not provided
+                    if not quantity:
+                        return {
+                            "messages": [AIMessage(content=f"How many units of **{item_name}** do you want to add? (e.g., '1', '5', '10')")],
+                            "pending_disambiguation": {
+                                "agent": "edit_job",
+                                "disambiguation_type": "add_viewed_product_quantity",
+                                "product": last_viewed,
+                                "job_id": job_id
+                            },
+                            "last_mentioned_job_id": job_id
+                        }
+
+                # For other operations, continue with normal flow by re-triggering extraction
+                return {
+                    "messages": [AIMessage(content=f"Great! Working with job **{job_id}**. Let me process your request.")],
+                    "last_mentioned_job_id": job_id,
+                    "pending_disambiguation": None
+                }
+            else:
+                return {
+                    "messages": [AIMessage(content="Please provide a valid job ID in the format COST-XXXXXXXX.")],
+                    "pending_disambiguation": pending
+                }
+
         # Handle job selection method (list jobs or enter ID)
         if disambiguation_type == "job_selection_method":
             user_message_stripped = user_message.strip()
@@ -409,6 +450,24 @@ def edit_job_node(state: AgentState):
             job_id_match = re.match(r'^(COST-[A-Z0-9]{8})$', user_message_stripped.upper())
             if job_id_match:
                 job_id = job_id_match.group(1)
+
+                # Check if there's a last_viewed_product - user might want to add it
+                last_viewed = state.get("last_viewed_product")
+                if last_viewed:
+                    item_name = last_viewed.get("item_name")
+                    # Ask for quantity first
+                    return {
+                        "messages": [AIMessage(content=f"Great! Working with job **{job_id}**.\n\nHow many units of **{item_name}** do you want to add? (e.g., '1', '5', '10')")],
+                        "pending_disambiguation": {
+                            "agent": "edit_job",
+                            "disambiguation_type": "add_viewed_product_quantity",
+                            "product": last_viewed,
+                            "job_id": job_id
+                        },
+                        "last_mentioned_job_id": job_id
+                    }
+
+                # No product context, ask what they want to do
                 return {
                     "messages": [AIMessage(content=
                         f"Great! Working with job **{job_id}**.\n\n"
@@ -869,6 +928,25 @@ def edit_job_node(state: AgentState):
         if job_id_match:
             job_id = job_id_match.group(1)
             print(f"[DEBUG edit_job_node] Direct job ID detected: {job_id}")
+
+            # Check if there's a last_viewed_product - user might want to add it
+            last_viewed = state.get("last_viewed_product")
+            if last_viewed:
+                item_name = last_viewed.get("item_name")
+                print(f"[DEBUG edit_job_node] Found last_viewed_product, asking for quantity")
+                # Ask for quantity first
+                return {
+                    "messages": [AIMessage(content=f"Great! Working with job **{job_id}**.\n\nHow many units of **{item_name}** do you want to add? (e.g., '1', '5', '10')")],
+                    "pending_disambiguation": {
+                        "agent": "edit_job",
+                        "disambiguation_type": "add_viewed_product_quantity",
+                        "product": last_viewed,
+                        "job_id": job_id
+                    },
+                    "last_mentioned_job_id": job_id
+                }
+
+            # No product context, ask what they want to do
             return {
                 "messages": [AIMessage(content=
                     f"Great! Working with job **{job_id}**.\n\n"
@@ -930,11 +1008,18 @@ def edit_job_node(state: AgentState):
 
     # Allow search_product operation without a job_id (standalone search)
     if not job_id and operation != "search_product":
+        # Preserve add_item intent and last_viewed_product when asking for job ID
         return {
             "messages": [AIMessage(content=
                 "I need to know which job to edit. Please provide a job ID (e.g., COST-00123456) "
                 "or mention 'this job' if we were just discussing one."
-            )]
+            )],
+            "pending_disambiguation": {
+                "agent": "edit_job",
+                "disambiguation_type": "job_id_needed",
+                "intended_operation": operation,
+                "params": params
+            }
         }
 
     # Execute the appropriate operation
