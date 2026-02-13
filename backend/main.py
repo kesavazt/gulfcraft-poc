@@ -191,6 +191,13 @@ def invoke_agent(message: str, user_id: int = 1, threshold: float = 1000.0, conv
         merged_state.update(session_state)
         session_state = merged_state
 
+    # Debug: Log what's in session_state
+    print(f"[invoke_agent] session_state keys: {session_state.keys() if session_state else 'None'}")
+    if session_state and 'last_viewed_product' in session_state:
+        print(f"[invoke_agent] last_viewed_product: {session_state.get('last_viewed_product')}")
+    else:
+        print(f"[invoke_agent] last_viewed_product NOT in session_state")
+
     messages = []
     if conversation_history:
         for msg in conversation_history:
@@ -253,6 +260,8 @@ def invoke_agent(message: str, user_id: int = 1, threshold: float = 1000.0, conv
             inputs["last_action"] = session_state["last_action"]
         if session_state.get("last_vendor_email"):
             inputs["last_vendor_email"] = session_state["last_vendor_email"]
+        if session_state.get("last_viewed_product"):
+            inputs["last_viewed_product"] = session_state["last_viewed_product"]
         # Fallback: use job_id as last_mentioned_job_id if not set
         if not inputs.get("last_mentioned_job_id") and session_state.get("job_id"):
             inputs["last_mentioned_job_id"] = session_state["job_id"]
@@ -316,6 +325,7 @@ def invoke_agent(message: str, user_id: int = 1, threshold: float = 1000.0, conv
         "last_mentioned_job_id": final_state.get("last_mentioned_job_id") or final_state.get("job_id"),
         "last_action": final_state.get("last_action"),
         "last_vendor_email": final_state.get("last_vendor_email"),
+        "last_viewed_product": final_state.get("last_viewed_product"),
         "pending_disambiguation": final_state.get("pending_disambiguation"),
         # New state management fields
         "state_version": final_state.get("state_version", "2.0"),

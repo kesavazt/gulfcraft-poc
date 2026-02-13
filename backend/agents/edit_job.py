@@ -339,7 +339,7 @@ def edit_job_node(state: AgentState):
                     ))],
                     "pending_disambiguation": {
                         "agent": "edit_job",
-                        "operation": "add_viewed_product_confirm",
+                        "disambiguation_type": "add_viewed_product_confirm",
                         "product": product,
                         "job_id": job_id,
                         "quantity": quantity
@@ -411,6 +411,8 @@ def edit_job_node(state: AgentState):
 
                 # Check if this is add_item with last_viewed_product
                 last_viewed = state.get("last_viewed_product")
+                print(f"[DEBUG job_id_needed] job_id: {job_id}, intended_operation: {intended_operation}, last_viewed: {last_viewed}")
+
                 if intended_operation == "add_item" and last_viewed:
                     # User wants to add the product they just viewed
                     item_name = last_viewed.get("item_name")
@@ -428,6 +430,18 @@ def edit_job_node(state: AgentState):
                             },
                             "last_mentioned_job_id": job_id
                         }
+                elif intended_operation == "add_item":
+                    # No last_viewed_product, ask for item name
+                    print(f"[DEBUG job_id_needed] No last_viewed_product, asking for item name")
+                    return {
+                        "messages": [AIMessage(content=f"Great! Working with job **{job_id}**.\n\nWhat item would you like to add? You can provide an item name, description, or item code.")],
+                        "pending_disambiguation": {
+                            "agent": "edit_job",
+                            "disambiguation_type": "add_item_name_needed",
+                            "job_id": job_id
+                        },
+                        "last_mentioned_job_id": job_id
+                    }
 
                 # For other operations, continue with normal flow by re-triggering extraction
                 return {
@@ -439,6 +453,50 @@ def edit_job_node(state: AgentState):
                 return {
                     "messages": [AIMessage(content="Please provide a valid job ID in the format COST-XXXXXXXX.")],
                     "pending_disambiguation": pending
+                }
+
+        # Handle add item name input
+        if disambiguation_type == "add_item_name_needed":
+            search_query = user_message.strip()
+            print(f"[DEBUG add_item_name_needed] Searching for: {search_query}")
+            search_result = tools.search_products_for_agent(search_query)
+
+            if search_result.get("found"):
+                results = search_result["results"][:10]
+                print(f"[DEBUG add_item_name_needed] Found {len(results)} products")
+
+                def _truncate_name(name, max_len=80):
+                    return name[:max_len] + "..." if len(name) > max_len else name
+
+                options = "\n".join([
+                    f"  {i+1}. **{_truncate_name(p['item_name'])}**\n"
+                    f"     Code: {p.get('item_code') or 'N/A'} | Price: {p.get('unit_cost') or 'N/A'} AED"
+                    for i, p in enumerate(results)
+                ])
+
+                return {
+                    "messages": [AIMessage(content=
+                        f"🔍 Found **{len(results)} products** matching '**{search_query}**':\n\n"
+                        f"{options}\n\n"
+                        f"Which product would you like to add? Reply with the number (1-{len(results)})."
+                    )],
+                    "last_mentioned_job_id": job_id,
+                    "pending_disambiguation": {
+                        "agent": "edit_job",
+                        "disambiguation_type": "product_selection",
+                        "items": results,
+                        "job_id": job_id,
+                    },
+                }
+            else:
+                print(f"[DEBUG add_item_name_needed] No products found")
+                return {
+                    "messages": [AIMessage(content=
+                        f"⚠️ No products found matching '**{search_query}**'.\n\n"
+                        f"💡 Try searching by item code if you have one, or try a different description."
+                    )],
+                    "last_mentioned_job_id": job_id,
+                    "pending_disambiguation": None,
                 }
 
         # Handle job selection method (list jobs or enter ID)
@@ -1019,7 +1077,8 @@ def edit_job_node(state: AgentState):
                 "disambiguation_type": "job_id_needed",
                 "intended_operation": operation,
                 "params": params
-            }
+            },
+            "last_viewed_product": state.get("last_viewed_product")  # Preserve product context
         }
 
     # Execute the appropriate operation
