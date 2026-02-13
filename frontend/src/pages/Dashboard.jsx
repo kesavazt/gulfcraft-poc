@@ -162,13 +162,13 @@ export default function Dashboard() {
                 sender: 'ai',
                 content: data.response,
                 download_url: data.download_url,
-                similar_quotations: data.state?.similar_quotations
+                similar_quotations: data.state?.similar_quotations,
+                pending_products: (data.state?.pending_disambiguation?.agent === 'pricing_advisor' ||
+                                  data.state?.pending_disambiguation?.agent === 'edit_job')
+                    ? data.state.pending_disambiguation.items
+                    : null
             };
             setMessages(prev => [...prev, aiMsg]);
-
-            if (data.download_url) {
-                downloadFile(data.download_url);
-            }
         } catch (error) {
             console.error("Failed to send message", error);
         } finally {
@@ -256,13 +256,13 @@ export default function Dashboard() {
                 sender: 'ai',
                 content: data.response,
                 download_url: data.download_url,
-                similar_quotations: data.state?.similar_quotations
+                similar_quotations: data.state?.similar_quotations,
+                pending_products: (data.state?.pending_disambiguation?.agent === 'pricing_advisor' ||
+                                  data.state?.pending_disambiguation?.agent === 'edit_job')
+                    ? data.state.pending_disambiguation.items
+                    : null
             };
             setMessages(prev => [...prev, aiMsg]);
-
-            if (data.download_url) {
-                downloadFile(data.download_url);
-            }
         } catch (error) {
             console.error("Failed to make selection", error);
         } finally {
@@ -590,6 +590,68 @@ export default function Dashboard() {
                                                     </div>
                                                 </div>
                                             )}
+
+                                            {msg.pending_products && msg.pending_products.length > 0 && (
+                                                <div className="mt-4 bg-white rounded-xl border border-gray-200 overflow-hidden shadow-sm w-full max-w-3xl">
+                                                    <div className="px-4 py-3 bg-blue-50 border-b border-blue-100">
+                                                        <h4 className="text-sm font-semibold text-blue-800">Product Search Results</h4>
+                                                    </div>
+                                                    <div className="overflow-x-auto">
+                                                        <table className="min-w-full divide-y divide-gray-200 text-sm">
+                                                            <thead className="bg-gray-50/50">
+                                                                <tr>
+                                                                    <th className="px-4 py-2 text-left font-medium text-gray-500">#</th>
+                                                                    <th className="px-4 py-2 text-left font-medium text-gray-500">Item Name</th>
+                                                                    <th className="px-4 py-2 text-left font-medium text-gray-500">Item Code</th>
+                                                                    <th className="px-4 py-2 text-right font-medium text-gray-500">Unit Cost</th>
+                                                                    <th className="px-4 py-2 text-left font-medium text-gray-500">Vendor</th>
+                                                                    <th className="px-4 py-2 text-right font-medium text-gray-500">Action</th>
+                                                                </tr>
+                                                            </thead>
+                                                            <tbody className="divide-y divide-gray-200 bg-white">
+                                                                {msg.pending_products.map((product, pIdx) => (
+                                                                    <tr key={pIdx} className="hover:bg-blue-50/30 transition-colors">
+                                                                        <td className="px-4 py-3 whitespace-nowrap text-gray-500">{pIdx + 1}</td>
+                                                                        <td className="px-4 py-3 text-gray-900 font-medium max-w-xs truncate" title={product.item_name}>{product.item_name || 'Unknown'}</td>
+                                                                        <td className="px-4 py-3 whitespace-nowrap font-mono text-xs text-gray-600">{product.item_code || 'N/A'}</td>
+                                                                        <td className="px-4 py-3 whitespace-nowrap text-right font-bold text-gray-900">
+                                                                            {product.unit_cost ? `${product.unit_cost.toLocaleString()} AED` : 'N/A'}
+                                                                        </td>
+                                                                        <td className="px-4 py-3 whitespace-nowrap text-gray-500">
+                                                                            {product.vendor_email ? product.vendor_email.split('@')[0] : 'N/A'}
+                                                                        </td>
+                                                                        <td className="px-4 py-3 whitespace-nowrap text-right">
+                                                                            <button
+                                                                                onClick={() => {
+                                                                                    const selectionMsg = { sender: 'user', content: `${pIdx + 1}` };
+                                                                                    setMessages(prev => [...prev, selectionMsg]);
+                                                                                    setLoading(true);
+                                                                                    sendMessage(`${pIdx + 1}`, conversationId, agentState)
+                                                                                        .then(data => {
+                                                                                            setConversationId(data.conversation_id);
+                                                                                            setAgentState(data.state);
+                                                                                            const aiMsg = {
+                                                                                                sender: 'ai',
+                                                                                                content: data.response,
+                                                                                                download_url: data.download_url
+                                                                                            };
+                                                                                            setMessages(prev => [...prev, aiMsg]);
+                                                                                        })
+                                                                                        .catch(err => console.error("Selection failed", err))
+                                                                                        .finally(() => setLoading(false));
+                                                                                }}
+                                                                                className="px-3 py-1.5 bg-blue-600 text-white text-xs font-medium rounded-lg hover:bg-blue-700 transition-colors shadow-sm"
+                                                                            >
+                                                                                Select
+                                                                            </button>
+                                                                        </td>
+                                                                    </tr>
+                                                                ))}
+                                                            </tbody>
+                                                        </table>
+                                                    </div>
+                                                </div>
+                                            )}
                                         </div>
                                     ))}
                                     {loading && (
@@ -711,9 +773,8 @@ export default function Dashboard() {
                                                             </td>
                                                             <td className="px-4 py-4 whitespace-nowrap">
                                                                 {req.price ? (
-                                                                    <div className="flex items-center text-sm font-bold text-gray-900">
-                                                                        <DollarSign className="h-3 w-3 text-gray-400 mr-1" />
-                                                                        {req.price.toFixed(2)}
+                                                                    <div className="text-sm font-bold text-gray-900">
+                                                                        {req.price.toFixed(2)} AED
                                                                     </div>
                                                                 ) : (
                                                                     <span className="text-sm text-gray-400">-</span>
