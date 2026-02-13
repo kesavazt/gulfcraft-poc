@@ -204,10 +204,10 @@ def supervisor_node(state: AgentState):
 
         # Handle based on confidence threshold
         if confidence_score["threshold"] == "medium":
-            # Add clarification message for medium confidence
-            clarification = scorer.generate_clarification_message(routed_agent, user_message)
-            routing_result["clarification_needed"] = True
-            routing_result["messages"] = [AIMessage(content=clarification)] + handoff_messages
+            # Medium confidence - proceed to agent (let agent handle clarifications)
+            # Agents are better equipped to ask for missing parameters with proper context
+            if handoff_messages:
+                routing_result["messages"] = handoff_messages
             return routing_result
         elif confidence_score["threshold"] == "low":
             # Low confidence - ask user to clarify or rephrase

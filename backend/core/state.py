@@ -68,6 +68,7 @@ class AgentState(TypedDict, total=False):
     last_action: Optional[str]  # Last action performed (e.g., "created_job", "edited_item")
     last_item_id: Optional[int]  # Last line item ID modified
     last_vendor_email: Optional[str]  # Last vendor mentioned
+    last_viewed_product: Optional[Dict[str, Any]]  # Last product viewed in PricingAdvisor (for "add this product")
     conversation_context: Optional[Dict[str, Any]]  # Additional context for agent decisions
     pending_disambiguation: Optional[Dict[str, Any]]  # Holds disambiguation state when multiple items match
 

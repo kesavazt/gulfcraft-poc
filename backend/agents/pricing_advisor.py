@@ -176,6 +176,11 @@ def pricing_advisor_node(state: AgentState):
             "messages": [AIMessage(content=response_msg)],
             "pending_disambiguation": None,
             "last_action": "product_search",
+            "last_viewed_product": {
+                "item_code": item_code,
+                "item_name": item_name,
+                "unit_price": unit_cost
+            }
         }
 
     # Extract parameters

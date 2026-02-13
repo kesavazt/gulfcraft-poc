@@ -309,6 +309,97 @@ def edit_job_node(state: AgentState):
         disambiguation_type = pending.get("disambiguation_type")
         job_id = pending.get("job_id")
 
+        # Handle quantity input for viewed product
+        if disambiguation_type == "add_viewed_product_quantity":
+            quantity_str = user_message.strip()
+            try:
+                quantity = int(quantity_str)
+                if quantity <= 0:
+                    return {
+                        "messages": [AIMessage(content="Please enter a positive number for quantity.")],
+                        "pending_disambiguation": pending
+                    }
+
+                product = pending.get("product")
+                item_name = product.get("item_name")
+                item_code = product.get("item_code")
+                unit_price = product.get("unit_price")
+                price_display = f"{unit_price} AED" if unit_price else "Pending quote"
+
+                # Ask for confirmation
+                return {
+                    "messages": [AIMessage(content=(
+                        f"Please confirm:\n\n"
+                        f"**Item:** {item_name}\n"
+                        f"**Item Code:** {item_code or 'N/A'}\n"
+                        f"**Quantity:** {quantity}\n"
+                        f"**Unit Price:** {price_display}\n"
+                        f"**Job:** {job_id}\n\n"
+                        f"Add this item? (Yes/No)"
+                    ))],
+                    "pending_disambiguation": {
+                        "agent": "edit_job",
+                        "operation": "add_viewed_product_confirm",
+                        "product": product,
+                        "job_id": job_id,
+                        "quantity": quantity
+                    },
+                    "last_mentioned_job_id": job_id
+                }
+            except ValueError:
+                return {
+                    "messages": [AIMessage(content="Please enter a valid number for quantity (e.g., '1', '5', '10').")],
+                    "pending_disambiguation": pending
+                }
+
+        # Handle confirmation for adding viewed product
+        if disambiguation_type == "add_viewed_product_confirm":
+            user_lower = user_message.strip().lower()
+            if any(word in user_lower for word in ["yes", "sure", "ok", "confirm", "proceed", "y"]):
+                product = pending.get("product")
+                quantity = pending.get("quantity")
+
+                result = tools.add_line_item_to_job(
+                    job_id=job_id,
+                    item_name=product.get("item_name"),
+                    item_code=product.get("item_code"),
+                    quantity=quantity,
+                    unit_price=product.get("unit_price")
+                )
+
+                if result.get("success"):
+                    price_display = f"{result.get('unit_price')} AED" if result.get('unit_price') else "Pending quote"
+                    response_msg = (
+                        f"✅ Added **{product.get('item_name')}** to job **{job_id}**\n\n"
+                        f"- Item Code: {product.get('item_code') or 'N/A'}\n"
+                        f"- Quantity: {quantity}\n"
+                        f"- Unit Price: {price_display}\n"
+                        f"- Status: {result.get('price_status')}\n\n"
+                        f"The costing sheet has been regenerated."
+                    )
+
+                    return {
+                        "messages": [AIMessage(content=response_msg)],
+                        "last_mentioned_job_id": job_id,
+                        "last_action": "add_item",
+                        "pending_disambiguation": None,
+                        "generated_file": result.get("file_path"),
+                        "last_viewed_product": None  # Clear after using
+                    }
+                else:
+                    return {
+                        "messages": [AIMessage(content=f"❌ Failed to add item: {result.get('error', 'Unknown error')}")],
+                        "last_mentioned_job_id": job_id,
+                        "pending_disambiguation": None
+                    }
+            else:
+                return {
+                    "messages": [AIMessage(content="Cancelled. The item was not added. What else can I help you with?")],
+                    "last_mentioned_job_id": job_id,
+                    "pending_disambiguation": None,
+                    "last_viewed_product": None  # Clear
+                }
+
         # Handle job selection method (list jobs or enter ID)
         if disambiguation_type == "job_selection_method":
             user_message_stripped = user_message.strip()
@@ -851,6 +942,52 @@ def edit_job_node(state: AgentState):
 
     if operation == "add_item":
         item_name = params.get("item_name")
+
+        # Check if user is referring to a product they just viewed
+        last_viewed = state.get("last_viewed_product")
+        user_message_lower = user_message.lower()
+        if last_viewed and any(phrase in user_message_lower for phrase in ["this product", "this item", "that product", "that item", "the product", "the item"]):
+            # User wants to add the product they just viewed
+            item_code = last_viewed.get("item_code")
+            item_name = last_viewed.get("item_name")
+            unit_price = last_viewed.get("unit_price")
+            quantity = params.get("quantity")
+
+            # Ask for quantity if not provided
+            if not quantity:
+                return {
+                    "messages": [AIMessage(content=f"How many units of **{item_name}** do you want to add? (e.g., '1', '5', '10')")],
+                    "pending_disambiguation": {
+                        "agent": "edit_job",
+                        "operation": "add_viewed_product_quantity",
+                        "product": last_viewed,
+                        "job_id": job_id
+                    },
+                    "last_mentioned_job_id": job_id
+                }
+
+            # If we have quantity, ask for confirmation
+            price_display = f"{unit_price} AED" if unit_price else "Pending quote"
+            return {
+                "messages": [AIMessage(content=(
+                    f"Please confirm:\n\n"
+                    f"**Item:** {item_name}\n"
+                    f"**Item Code:** {item_code or 'N/A'}\n"
+                    f"**Quantity:** {quantity}\n"
+                    f"**Unit Price:** {price_display}\n"
+                    f"**Job:** {job_id}\n\n"
+                    f"Add this item? (Yes/No)"
+                ))],
+                "pending_disambiguation": {
+                    "agent": "edit_job",
+                    "operation": "add_viewed_product_confirm",
+                    "product": last_viewed,
+                    "job_id": job_id,
+                    "quantity": quantity
+                },
+                "last_mentioned_job_id": job_id
+            }
+
         if not item_name:
             response_msg = "Please specify the item name or item code to add."
             return {
