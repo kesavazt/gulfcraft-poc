@@ -93,9 +93,41 @@ def pricing_advisor_node(state: AgentState):
     """
     user_message = state["messages"][-1].content if state.get("messages") else ""
 
-    # Handle disambiguation response (user selecting from search results)
+    # Handle disambiguation response (user selecting from search results or providing search term)
     pending = state.get("pending_disambiguation")
     if pending and pending.get("agent") == "pricing_advisor":
+        # Handle case where we're waiting for user to provide search term
+        if pending.get("query_type") == "product_search_awaiting_input":
+            search_query = user_message.strip()
+            if not search_query:
+                return {
+                    "messages": [AIMessage(content="Please provide a product description to search for.")],
+                    "pending_disambiguation": pending
+                }
+
+            # Execute product search
+            search_result = tools.search_products_by_description(search_query, limit=10)
+
+            if search_result.get("found"):
+                results = search_result["results"]
+                response_msg = f"🔎 Found **{len(results)} products** matching '**{search_query}**'. Please select one to see detailed pricing."
+
+                return {
+                    "messages": [AIMessage(content=response_msg)],
+                    "pending_disambiguation": {
+                        "agent": "pricing_advisor",
+                        "items": results[:10],
+                    },
+                    "last_action": "product_search",
+                }
+            else:
+                return {
+                    "messages": [AIMessage(content=f"No products found matching '**{search_query}**'. Try a different description or item code.")],
+                    "pending_disambiguation": None,
+                    "last_action": "product_search"
+                }
+
+        # Handle case where user is selecting from search results
         selection = user_message.strip()
         items = pending.get("items", [])
         selected_item = None
@@ -176,7 +208,15 @@ def pricing_advisor_node(state: AgentState):
     if query_type == "product_search":
         query_text = search_query or item_name or ""
         if not query_text:
-            response_msg = "Please describe the product you want to search for."
+            # Ask for search term and set pending state to capture response
+            return {
+                "messages": [AIMessage(content="Please describe the product you want to search for (e.g., 'hydraulic pump', 'marine engine', 'anchor winch').")],
+                "pending_disambiguation": {
+                    "agent": "pricing_advisor",
+                    "query_type": "product_search_awaiting_input"
+                },
+                "last_action": "product_search"
+            }
         else:
             search_result = tools.search_products_by_description(query_text, limit=10)
 
