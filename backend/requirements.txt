@@ -15,3 +15,10 @@ python-multipart
 requests
 python-dotenv
 openpyxl
+
+# Agent Improvements - Phase 1: State Management
+apscheduler  # Background cleanup tasks for state and files
+
+# Agent Improvements - Phase 2: NLU Enhancement
+spacy  # NER for entity extraction
+tiktoken  # Token counting for GPT models

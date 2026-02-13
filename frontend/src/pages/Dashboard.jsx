@@ -500,13 +500,78 @@ export default function Dashboard() {
                                 {/* Messages Area */}
                                 <div className="flex-1 overflow-y-auto p-4 sm:p-6 lg:p-8 space-y-4 sm:space-y-6 custom-scrollbar" style={{ maxHeight: '600px' }}>
                                     {messages.length === 0 && (
-                                        <div className="flex flex-col items-center justify-center h-full text-gray-400 space-y-4">
+                                        <div className="flex flex-col items-center justify-center h-full space-y-6 px-4 max-w-3xl mx-auto">
                                             <div className="bg-brand-50 p-6 rounded-full">
-                                                <img src="/logo.jpg" alt="Gulf Craft" className="h-12 opacity-50 grayscale" />
+                                                <img src="/logo.jpg" alt="Gulf Craft" className="h-16 opacity-80" />
                                             </div>
-                                            <div className="text-center">
-                                                <h3 className="text-lg font-semibold text-gray-900">How can I help you today?</h3>
-                                                <p className="text-sm text-gray-500 mt-1">Ask about product costing, search items, or check status.</p>
+                                            <div className="text-center space-y-3">
+                                                <h2 className="text-2xl font-bold text-gray-900">Welcome to Gulf Craft Costing Agent</h2>
+                                                <p className="text-base text-gray-600 max-w-xl">
+                                                    Your AI-powered assistant for managing maintenance and repair quotations, vendor quotes, and costing jobs.
+                                                </p>
+                                            </div>
+                                            <div className="w-full bg-white rounded-xl border border-gray-200 shadow-sm p-6">
+                                                <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wider mb-4">What I Can Do:</h3>
+                                                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                                    <div className="flex items-start gap-3">
+                                                        <div className="bg-brand-100 p-2 rounded-lg mt-0.5">
+                                                            <FileText className="h-4 w-4 text-brand-700" />
+                                                        </div>
+                                                        <div>
+                                                            <h4 className="text-sm font-semibold text-gray-900">Create Costing Jobs</h4>
+                                                            <p className="text-xs text-gray-500 mt-1">Generate quotations from maintenance descriptions and boat models</p>
+                                                        </div>
+                                                    </div>
+                                                    <div className="flex items-start gap-3">
+                                                        <div className="bg-brand-100 p-2 rounded-lg mt-0.5">
+                                                            <Search className="h-4 w-4 text-brand-700" />
+                                                        </div>
+                                                        <div>
+                                                            <h4 className="text-sm font-semibold text-gray-900">Search Products & Quotations</h4>
+                                                            <p className="text-xs text-gray-500 mt-1">Find items, check prices, and locate similar past quotations</p>
+                                                        </div>
+                                                    </div>
+                                                    <div className="flex items-start gap-3">
+                                                        <div className="bg-brand-100 p-2 rounded-lg mt-0.5">
+                                                            <DollarSign className="h-4 w-4 text-brand-700" />
+                                                        </div>
+                                                        <div>
+                                                            <h4 className="text-sm font-semibold text-gray-900">Manage Vendor Quotes</h4>
+                                                            <p className="text-xs text-gray-500 mt-1">Send quote requests, track responses, and update pricing</p>
+                                                        </div>
+                                                    </div>
+                                                    <div className="flex items-start gap-3">
+                                                        <div className="bg-brand-100 p-2 rounded-lg mt-0.5">
+                                                            <Clock className="h-4 w-4 text-brand-700" />
+                                                        </div>
+                                                        <div>
+                                                            <h4 className="text-sm font-semibold text-gray-900">Track Job Status</h4>
+                                                            <p className="text-xs text-gray-500 mt-1">Monitor pending quotes, check completion, and download sheets</p>
+                                                        </div>
+                                                    </div>
+                                                    <div className="flex items-start gap-3">
+                                                        <div className="bg-brand-100 p-2 rounded-lg mt-0.5">
+                                                            <Edit2 className="h-4 w-4 text-brand-700" />
+                                                        </div>
+                                                        <div>
+                                                            <h4 className="text-sm font-semibold text-gray-900">Edit Line Items</h4>
+                                                            <p className="text-xs text-gray-500 mt-1">Modify quantities, prices, add or remove items from jobs</p>
+                                                        </div>
+                                                    </div>
+                                                    <div className="flex items-start gap-3">
+                                                        <div className="bg-brand-100 p-2 rounded-lg mt-0.5">
+                                                            <Paperclip className="h-4 w-4 text-brand-700" />
+                                                        </div>
+                                                        <div>
+                                                            <h4 className="text-sm font-semibold text-gray-900">Upload Vendor PDFs</h4>
+                                                            <p className="text-xs text-gray-500 mt-1">Extract quotes from vendor PDF files automatically</p>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                            <div className="text-center space-y-2">
+                                                <p className="text-sm font-medium text-gray-700">What would you like to do today?</p>
+                                                <p className="text-xs text-gray-500">Try: "I need a quotation for polishing. My boat is MAJESTY62" or "Check status of my jobs"</p>
                                             </div>
                                         </div>
                                     )}

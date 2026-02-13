@@ -175,10 +175,59 @@ class PendingQuoteRequest(Base):
     received_price = Column(Float, nullable=True)
     received_at = Column(DateTime(timezone=True), nullable=True)
 
+
+class ConversationState(Base):
+    """Stores conversation state snapshots with versioning for persistence and migration."""
+    __tablename__ = "conversation_states"
+    id = Column(Integer, primary_key=True, index=True)
+    conversation_id = Column(String, index=True, nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id"))
+    state_version = Column(String, nullable=False)  # Version tag (e.g., "2.0")
+    state_data = Column(Text, nullable=False)  # JSON blob of AgentState
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
+
+    user = relationship("User")
+
+
+class StateCheckpoint(Base):
+    """Recovery points for long-running workflows (quote requests, job creation)."""
+    __tablename__ = "state_checkpoints"
+    id = Column(Integer, primary_key=True, index=True)
+    job_id = Column(String, index=True, nullable=False)
+    checkpoint_type = Column(String, nullable=False)  # quotes_sent, costing_sheet_generated, sharepoint_synced
+    state_snapshot = Column(Text, nullable=False)  # JSON snapshot of state at checkpoint
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
+
+
+class UserCorrection(Base):
+    """Tracks user corrections for learning and improving NLU."""
+    __tablename__ = "user_corrections"
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"))
+    conversation_id = Column(String, index=True)
+    original_input = Column(Text, nullable=False)  # User's original message
+    extracted_intent = Column(String, nullable=False)  # What the system extracted/understood
+    corrected_intent = Column(String, nullable=False)  # What the user actually meant
+    correction_type = Column(String, nullable=False)  # intent, entity, parameter
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    user = relationship("User")
+
+
+class AgentTransitionLog(Base):
+    """Logs agent-to-agent transitions for debugging and analytics."""
+    __tablename__ = "agent_transition_logs"
+    id = Column(Integer, primary_key=True, index=True)
+    conversation_id = Column(String, index=True, nullable=False)
+    from_agent = Column(String, nullable=True)  # Source agent (null for entry point)
+    to_agent = Column(String, nullable=False)  # Target agent
+    routing_reason = Column(String, nullable=True)  # user_requested, auto_delegation, pending_disambiguation
+    timestamp = Column(DateTime(timezone=True), server_default=func.now(), index=True)
+
 # Setup Database Connection
 engine = create_engine(config.DATABASE_URL, connect_args={"check_same_thread": False} if "sqlite" in config.DATABASE_URL else {})
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 def init_db():
-    Base.metadata.drop_all(bind=engine)
+    #Base.metadata.drop_all(bind=engine)
     Base.metadata.create_all(bind=engine)     

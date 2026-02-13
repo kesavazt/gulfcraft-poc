@@ -115,6 +115,42 @@ workflow.add_edge("CostingAgent", END)
 app = workflow.compile()
 
 
+# =============================================================================
+# Background Cleanup Tasks
+# =============================================================================
+
+from apscheduler.schedulers.background import BackgroundScheduler
+from core.state_manager import StateManager
+from utils.file_cleanup import FileCleanupManager
+
+# Initialize scheduler for background cleanup tasks
+cleanup_scheduler = BackgroundScheduler()
+
+# Schedule state cleanup (runs daily at 2 AM)
+cleanup_scheduler.add_job(
+    func=lambda: StateManager().cleanup_expired_states(),
+    trigger="cron",
+    hour=2,
+    minute=0,
+    id="cleanup_expired_states",
+    name="Cleanup expired conversation states"
+)
+
+# Schedule file cleanup (runs daily at 2 AM)
+cleanup_scheduler.add_job(
+    func=lambda: FileCleanupManager().cleanup_old_files(days=7),
+    trigger="cron",
+    hour=2,
+    minute=15,
+    id="cleanup_old_files",
+    name="Cleanup old temporary costing sheets"
+)
+
+# Start the scheduler
+cleanup_scheduler.start()
+print("[Cleanup Scheduler] Background tasks scheduled (state cleanup @ 2:00 AM, file cleanup @ 2:15 AM)")
+
+
 def invoke_agent(message: str, user_id: int = 1, threshold: float = 1000.0, conversation_history: list = None, session_state: dict = None, conversation_id: str = None):
     """
     Invoke the agent with a single message.
@@ -133,11 +169,27 @@ def invoke_agent(message: str, user_id: int = 1, threshold: float = 1000.0, conv
     """
     from langchain_core.messages import HumanMessage, AIMessage
     from utils.langfuse_tracing import trace_context
+    from core.state_manager import StateManager
+    from utils.conversation_summary import ConversationSummarizer
+    from utils.token_manager import TokenManager
     import uuid
 
     # Generate conversation_id if not provided (must be valid 32-char hex for Langfuse)
     if not conversation_id:
         conversation_id = uuid.uuid4().hex
+
+    # Load persisted state from database (if available)
+    state_manager = StateManager()
+    persisted_state = state_manager.load_state(conversation_id)
+
+    # Merge persisted state with session_state (session_state takes precedence)
+    if persisted_state and not session_state:
+        session_state = persisted_state
+    elif persisted_state and session_state:
+        # Merge: persisted_state as base, session_state overrides
+        merged_state = persisted_state.copy()
+        merged_state.update(session_state)
+        session_state = merged_state
 
     messages = []
     if conversation_history:
@@ -149,10 +201,35 @@ def invoke_agent(message: str, user_id: int = 1, threshold: float = 1000.0, conv
 
     messages.append(HumanMessage(content=message))
 
+    # Apply conversation summarization for long conversations
+    summarizer = ConversationSummarizer()
+    if summarizer.should_summarize(messages):
+        messages = summarizer.compress_history(messages)
+
+    # Apply token management and pruning
+    token_mgr = TokenManager()
+    token_stats = token_mgr.get_token_stats(messages)
+    if token_stats["needs_pruning"]:
+        print(f"[TokenManager] Pruning conversation ({token_stats['total_tokens']} tokens, {token_stats['utilization_percent']}% utilization)")
+        messages = token_mgr.prune_messages(messages)
+
     inputs = {
         "messages": messages,
+        "conversation_id": conversation_id,  # Pass conversation_id to state
         "user_id": user_id,
-        "threshold": threshold
+        "threshold": threshold,
+        # Initialize new state management fields with defaults
+        "state_version": "2.0",
+        "disambiguation_lock": False,
+        "disambiguation_expires_at": None,
+        "extraction_failures": 0,
+        "last_agent": None,
+        "routing_reason": None,
+        "routing_context": None,
+        "transition_history": [],
+        "handoff_context": None,
+        "intent_confidence": None,
+        "clarification_needed": False
     }
 
     # Add persisted session state if available
@@ -184,6 +261,27 @@ def invoke_agent(message: str, user_id: int = 1, threshold: float = 1000.0, conv
         # Preserve generated_file path across turns so download URL is available
         if session_state.get("generated_file"):
             inputs["generated_file"] = session_state["generated_file"]
+        # New state management fields (preserve from session if available)
+        if session_state.get("disambiguation_lock"):
+            inputs["disambiguation_lock"] = session_state["disambiguation_lock"]
+        if session_state.get("disambiguation_expires_at"):
+            inputs["disambiguation_expires_at"] = session_state["disambiguation_expires_at"]
+        if session_state.get("extraction_failures") is not None:
+            inputs["extraction_failures"] = session_state["extraction_failures"]
+        if session_state.get("last_agent"):
+            inputs["last_agent"] = session_state["last_agent"]
+        if session_state.get("routing_reason"):
+            inputs["routing_reason"] = session_state["routing_reason"]
+        if session_state.get("routing_context"):
+            inputs["routing_context"] = session_state["routing_context"]
+        if session_state.get("transition_history"):
+            inputs["transition_history"] = session_state["transition_history"]
+        if session_state.get("handoff_context"):
+            inputs["handoff_context"] = session_state["handoff_context"]
+        if session_state.get("intent_confidence") is not None:
+            inputs["intent_confidence"] = session_state["intent_confidence"]
+        if session_state.get("clarification_needed"):
+            inputs["clarification_needed"] = session_state["clarification_needed"]
 
     response_messages = []
     final_state = {}
@@ -201,27 +299,44 @@ def invoke_agent(message: str, user_id: int = 1, threshold: float = 1000.0, conv
     # Only use current turn's generated_file, don't preserve from previous turns
     generated_file = final_state.get("generated_file")
 
+    # Prepare state dict with all fields (including new ones)
+    state_dict = {
+        "awaiting_selection": final_state.get("awaiting_selection", False),
+        "job_id": final_state.get("job_id"),
+        "emails_sent": final_state.get("emails_sent", False),
+        "awaiting_quotes": final_state.get("awaiting_quotes", False),
+        "generated_file": generated_file,
+        "sharepoint_url": final_state.get("sharepoint_url"),
+        "last_search_description": final_state.get("last_search_description"),
+        "last_search_boat_model": final_state.get("last_search_boat_model"),
+        "current_top_k": final_state.get("current_top_k"),
+        "similar_quotations": final_state.get("similar_quotations"),
+        "selected_quotation": final_state.get("selected_quotation"),
+        # Context tracking
+        "last_mentioned_job_id": final_state.get("last_mentioned_job_id") or final_state.get("job_id"),
+        "last_action": final_state.get("last_action"),
+        "last_vendor_email": final_state.get("last_vendor_email"),
+        "pending_disambiguation": final_state.get("pending_disambiguation"),
+        # New state management fields
+        "state_version": final_state.get("state_version", "2.0"),
+        "disambiguation_lock": final_state.get("disambiguation_lock", False),
+        "disambiguation_expires_at": final_state.get("disambiguation_expires_at"),
+        "extraction_failures": final_state.get("extraction_failures", 0),
+        "last_agent": final_state.get("last_agent"),
+        "routing_reason": final_state.get("routing_reason"),
+        "routing_context": final_state.get("routing_context"),
+        "transition_history": final_state.get("transition_history", []),
+        "handoff_context": final_state.get("handoff_context"),
+        "intent_confidence": final_state.get("intent_confidence"),
+        "clarification_needed": final_state.get("clarification_needed", False)
+    }
+
+    # Save state to database for persistence
+    state_manager.save_state(conversation_id, state_dict, user_id)
+
     return {
         "response": "\n".join(response_messages),
-        "state": {
-            "awaiting_selection": final_state.get("awaiting_selection", False),
-            "job_id": final_state.get("job_id"),
-            "emails_sent": final_state.get("emails_sent", False),
-            "awaiting_quotes": final_state.get("awaiting_quotes", False),
-            "generated_file": generated_file,
-            "sharepoint_url": final_state.get("sharepoint_url"),
-            "last_search_description": final_state.get("last_search_description"),
-            "last_search_boat_model": final_state.get("last_search_boat_model"),
-            "current_top_k": final_state.get("current_top_k"),
-            "similar_quotations": final_state.get("similar_quotations"),
-            "selected_quotation": final_state.get("selected_quotation"),
-            # Context tracking
-            "last_mentioned_job_id": final_state.get("last_mentioned_job_id") or final_state.get("job_id"),
-            "last_action": final_state.get("last_action"),
-            "last_vendor_email": final_state.get("last_vendor_email"),
-            "pending_disambiguation": final_state.get("pending_disambiguation")
-        }
-
+        "state": state_dict
     }
 
 

@@ -1112,6 +1112,60 @@ def confirm_quote_matches(
     }
 
 
+# --- Agent Transition Logging ---
+
+@app.get("/conversations/{conversation_id}/transitions")
+def get_conversation_transitions(
+    conversation_id: str,
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Get agent transition history for a conversation.
+    Returns flow diagram, raw transitions, and complexity metrics.
+    """
+    from utils.transition_logger import TransitionLogger
+
+    logger = TransitionLogger()
+
+    # Get flow diagram
+    flow_diagram = logger.visualize_flow(conversation_id)
+
+    # Get raw transitions
+    raw_transitions = logger.get_raw_transitions(conversation_id)
+
+    # Get complexity metrics
+    complexity = logger.get_conversation_complexity(conversation_id)
+
+    # Get timeline with durations
+    timeline = logger.get_transition_timeline(conversation_id)
+
+    return {
+        "conversation_id": conversation_id,
+        "flow_diagram": flow_diagram,
+        "transitions": raw_transitions,
+        "complexity": complexity,
+        "timeline": timeline,
+        "total_transitions": len(raw_transitions)
+    }
+
+
+@app.get("/analytics/agent-usage")
+def get_agent_usage_stats(
+    limit: int = 100,
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Get agent usage statistics across recent conversations.
+    Useful for analytics and optimization.
+    """
+    from utils.transition_logger import TransitionLogger
+
+    logger = TransitionLogger()
+    stats = logger.get_agent_usage_stats(limit_conversations=limit)
+
+    return stats
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)

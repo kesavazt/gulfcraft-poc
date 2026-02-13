@@ -70,3 +70,26 @@ class AgentState(TypedDict, total=False):
     last_vendor_email: Optional[str]  # Last vendor mentioned
     conversation_context: Optional[Dict[str, Any]]  # Additional context for agent decisions
     pending_disambiguation: Optional[Dict[str, Any]]  # Holds disambiguation state when multiple items match
+
+    # =========================================================================
+    # State Management & Versioning
+    # =========================================================================
+    state_version: str  # State schema version (e.g., "2.0") for migration support
+    disambiguation_lock: bool  # Prevents race conditions during disambiguation flows
+    disambiguation_expires_at: Optional[str]  # ISO timestamp when disambiguation times out (5 min)
+    extraction_failures: int  # Counter for consecutive extraction failures (triggers repair)
+
+    # =========================================================================
+    # Agent Transition Metadata
+    # =========================================================================
+    last_agent: Optional[str]  # Previously active agent (for handoff context)
+    routing_reason: Optional[str]  # Why agent was routed (user_requested, auto_delegation, pending_disambiguation)
+    routing_context: Optional[Dict[str, Any]]  # Additional context passed to receiving agent
+    transition_history: List[Dict[str, Any]]  # Log of agent transitions in this conversation
+    handoff_context: Optional[Dict[str, Any]]  # Context prepared during agent handoff
+
+    # =========================================================================
+    # NLU Enhancement
+    # =========================================================================
+    intent_confidence: Optional[float]  # Confidence score (0-1) for routing decision
+    clarification_needed: bool  # Flag indicating clarification is required
