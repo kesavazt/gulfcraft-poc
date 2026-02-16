@@ -1193,7 +1193,14 @@ def edit_job_node(state: AgentState):
         # Check if user is referring to a product they just viewed
         last_viewed = state.get("last_viewed_product")
         user_message_lower = user_message.lower()
-        if last_viewed and any(phrase in user_message_lower for phrase in ["this product", "this item", "that product", "that item", "the product", "the item"]):
+        # Check for explicit references OR if they're saying "add this/that" without specifying item_name
+        is_referring_to_viewed = (
+            last_viewed and (
+                any(phrase in user_message_lower for phrase in ["this product", "this item", "that product", "that item", "the product", "the item", "add this", "add that", "add it"]) or
+                (not item_name and any(word in user_message_lower for word in ["this", "that", "it"]))
+            )
+        )
+        if is_referring_to_viewed:
             # User wants to add the product they just viewed
             item_code = last_viewed.get("item_code")
             item_name = last_viewed.get("item_name")
@@ -1206,7 +1213,7 @@ def edit_job_node(state: AgentState):
                     "messages": [AIMessage(content=f"How many units of **{item_name}** do you want to add? (e.g., '1', '5', '10')")],
                     "pending_disambiguation": {
                         "agent": "edit_job",
-                        "operation": "add_viewed_product_quantity",
+                        "disambiguation_type": "add_viewed_product_quantity",
                         "product": last_viewed,
                         "job_id": job_id
                     },
@@ -1227,7 +1234,7 @@ def edit_job_node(state: AgentState):
                 ))],
                 "pending_disambiguation": {
                     "agent": "edit_job",
-                    "operation": "add_viewed_product_confirm",
+                    "disambiguation_type": "add_viewed_product_confirm",
                     "product": last_viewed,
                     "job_id": job_id,
                     "quantity": quantity

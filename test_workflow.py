@@ -33,6 +33,23 @@ def print_response(step, response):
         print(f"Agent: {response.get('agent', 'N/A')}")
         if response.get('generated_file'):
             print(f"Generated File: {response['generated_file']}")
+
+        # Print state debugging info
+        state = response.get('state', {})
+        if state:
+            print(f"\n[STATE DEBUG]")
+            print(f"  last_mentioned_job_id: {state.get('last_mentioned_job_id', 'NOT SET')}")
+
+            # Safely handle last_viewed_product
+            last_viewed = state.get('last_viewed_product')
+            if last_viewed and isinstance(last_viewed, dict):
+                print(f"  last_viewed_product: {last_viewed.get('item_name', 'NOT SET')}")
+
+            # Safely handle pending_disambiguation
+            pending = state.get('pending_disambiguation')
+            if pending and isinstance(pending, dict):
+                print(f"  pending_disambiguation: {pending.get('disambiguation_type', 'None')}")
+
         print(f"{'='*80}\n")
     except Exception as e:
         print(f"[ERROR] Failed to print response: {e}")
@@ -119,17 +136,10 @@ def test_complete_workflow():
     state = result.get('state')
     time.sleep(1)
 
-    # Step 6b: Provides job ID when asked
-    print("\n[USER] COST-EB919F19")
-    response = send_message("COST-EB919F19", conversation_id, state, token)
-    result = print_response("6b", response)
-    state = result.get('state')
-    time.sleep(1)
-
-    # Step 7a: Provides quantity
+    # Step 7: Provides quantity (agent already knows job ID and product!)
     print("\n[USER] 3")
     response = send_message("3", conversation_id, state, token)
-    result = print_response("7a", response)
+    result = print_response(7, response)
     state = result.get('state')
     time.sleep(1)
 

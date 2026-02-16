@@ -56,37 +56,61 @@ def job_lifecycle_node(state: AgentState):
     user_message = state["messages"][-1].content if state.get("messages") else ""
     user_id = state.get("user_id", 1)
 
-    # Extract parameters
-    params = _extract_lifecycle_parameters(user_message, state)
+    # Check for pending disambiguation (waiting for job ID)
+    pending = state.get("pending_disambiguation")
+    if pending and pending.get("agent") == "job_lifecycle":
+        # User is providing job ID for a pending operation
+        job_id_match = re.match(r'^(COST-[A-Z0-9]{8})$', user_message.strip().upper())
+        if job_id_match:
+            job_id = job_id_match.group(1)
+            operation = pending.get("operation")
+            params = pending.get("params", {})
+            params["job_id"] = job_id
+            print(f"[JobLifecycle] Resuming operation '{operation}' for job {job_id}")
+            # Continue with the operation below
+        else:
+            return {
+                "messages": [AIMessage(content="Please provide a valid job ID in the format COST-XXXXXXXX.")],
+                "pending_disambiguation": pending
+            }
+    else:
+        # Extract parameters from user message
+        params = _extract_lifecycle_parameters(user_message, state)
 
-    if not params or not params.get("operation"):
-        return {
-            "messages": [AIMessage(content=
-                "I can help you manage job lifecycle! I can:\n\n"
-                "✅ **Approve jobs** - Mark jobs as approved\n"
-                "📥 **Download costing sheets** - Get download links\n"
-                "📋 **Duplicate jobs** - Create copies with modifications\n"
-                "❌ **Cancel jobs** - Mark jobs as cancelled\n"
-                "📧 **Email costing sheets** - Send to reviewers or default supervisor\n\n"
-                "Examples:\n"
-                "- 'Approve job COST-00123'\n"
-                "- 'Download the costing sheet'\n"
-                "- 'Duplicate this job for Nomad 75'\n"
-                "- 'Send the costing sheet to manager@gulfcraft.com'\n"
-                "- 'Send to supervisor email' (uses default notification email)"
-            )]
-        }
+        if not params or not params.get("operation"):
+            return {
+                "messages": [AIMessage(content=
+                    "I can help you manage job lifecycle! I can:\n\n"
+                    "✅ **Approve jobs** - Mark jobs as approved\n"
+                    "📥 **Download costing sheets** - Get download links\n"
+                    "📋 **Duplicate jobs** - Create copies with modifications\n"
+                    "❌ **Cancel jobs** - Mark jobs as cancelled\n"
+                    "📧 **Email costing sheets** - Send to reviewers or default supervisor\n\n"
+                    "Examples:\n"
+                    "- 'Approve job COST-00123'\n"
+                    "- 'Download the costing sheet'\n"
+                    "- 'Duplicate this job for Nomad 75'\n"
+                    "- 'Send the costing sheet to manager@gulfcraft.com'\n"
+                    "- 'Send to supervisor email' (uses default notification email)"
+                )]
+            }
 
-    job_id = params.get("job_id")
-    operation = params.get("operation")
+        job_id = params.get("job_id")
+        operation = params.get("operation")
 
-    if not job_id:
-        return {
-            "messages": [AIMessage(content=
-                "I need to know which job to work with. Please provide a job ID "
-                "(e.g., COST-00123456) or mention 'this job' if we were just discussing one."
-            )]
-        }
+        if not job_id:
+            # Ask for job ID and preserve operation in pending_disambiguation
+            return {
+                "messages": [AIMessage(content=
+                    "I need to know which job to work with. Please provide a job ID "
+                    "(e.g., COST-00123456) or mention 'this job' if we were just discussing one."
+                )],
+                "pending_disambiguation": {
+                    "agent": "job_lifecycle",
+                    "operation": operation,
+                    "params": params
+                }
+            }
 
     # Execute the appropriate operation
     result = None
@@ -159,6 +183,20 @@ def job_lifecycle_node(state: AgentState):
         recipient_email = params.get("recipient_email")
         message = params.get("message", "")
 
+        # Treat placeholder words/phrases as empty (e.g., "supervisor", "manager", "supervisor email")
+        placeholder_words = ["supervisor", "manager", "default", "notification"]
+        recipient_lower = recipient_email.lower().strip() if recipient_email else ""
+
+        # Check if it's a placeholder (exact match or contains placeholder words but no @ symbol)
+        is_placeholder = (
+            recipient_lower in placeholder_words or
+            (any(word in recipient_lower for word in placeholder_words) and "@" not in recipient_email)
+        )
+
+        if is_placeholder:
+            print(f"[JobLifecycle] Detected placeholder '{recipient_email}', using default notification email")
+            recipient_email = None
+
         # Use default notification email if no recipient specified
         if not recipient_email:
             recipient_email = config.NOTIFICATION_EMAIL
@@ -200,5 +238,6 @@ def job_lifecycle_node(state: AgentState):
     return {
         "messages": [AIMessage(content=response_msg)],
         "last_mentioned_job_id": job_id,
-        "last_action": operation
+        "last_action": operation,
+        "pending_disambiguation": None  # Clear pending state
     }

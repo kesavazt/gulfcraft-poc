@@ -30,7 +30,7 @@ SMTP_SERVER = os.getenv("SMTP_SERVER", "smtp.office365.com")
 SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
 SMTP_EMAIL = os.getenv("SMTP_EMAIL", "")
 SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")
-NOTIFICATION_EMAIL = os.getenv("NOTIFICATION_EMAIL", os.getenv("SMTP_EMAIL", ""))
+NOTIFICATION_EMAIL = os.getenv("NOTIFICATION_EMAIL", "")
 
 # IMAP config (for receiving/polling)
 IMAP_SERVER = os.getenv("IMAP_SERVER", "outlook.office365.com")

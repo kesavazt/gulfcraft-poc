@@ -228,8 +228,10 @@ For view_items: no additional parameters (used when user wants to see current it
 
 Use "search_product" when the user says things like "search for", "find product", "look up", "search products for..."
 Use "add_item" when the user wants to add an item directly (the system will search automatically by description).
+Use "add_item" when the user says things like "add this to my job", "add this", "add it to the job", "add that product" — these refer to a previously viewed product.
 Use "view_items" when the user wants to see/list/show the current items in the job (e.g., "show me the list of items", "what items are in this job", "list items").
 The item_name field can be a descriptive search like "hydraulic pump" or "marine engine" — the system supports semantic search by description.
+When user says "add this" or "add that", leave item_name empty (the system will use the last viewed product).
 
 IMPORTANT: If the user message is just a number (like "1", "2", "3") or a simple confirmation ("yes", "no"), return an empty JSON object {{}}.
 These are disambiguation responses, NOT new operations.

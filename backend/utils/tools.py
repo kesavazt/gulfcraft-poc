@@ -76,7 +76,7 @@ def send_email(to: str, subject: str, body: str, service: str = "microsoft", att
         if ctype is None or encoding is not None:
             ctype = 'application/octet-stream'
         maintype, subtype = ctype.split('/', 1)
-        
+
         with open(attachment_path, 'rb') as fp:
             msg.add_attachment(
                 fp.read(),
@@ -85,6 +85,13 @@ def send_email(to: str, subject: str, body: str, service: str = "microsoft", att
                 filename=os.path.basename(attachment_path)
             )
         print(f"[SMTP] Attached file: {attachment_path}")
+
+    # Log email details before sending
+    print(f"[SMTP] Email Details:")
+    print(f"[SMTP]   From: {sender_email}")
+    print(f"[SMTP]   To: {to}")
+    print(f"[SMTP]   Subject: {subject}")
+    print(f"[SMTP]   Service: {service}")
 
     try:
         print(f"[SMTP] Connecting to {service} server ({server_addr})...")
@@ -2484,6 +2491,11 @@ Status: {costing_req.status}
 Best regards,
 Gulf Craft Costing Team
 """
+
+        print(f"[send_costing_sheet_email] Preparing to send email")
+        print(f"[send_costing_sheet_email] Job ID: {job_id}")
+        print(f"[send_costing_sheet_email] Recipient email: {recipient_email}")
+        print(f"[send_costing_sheet_email] File path: {file_path}")
 
         email_sent = send_email(
             to=recipient_email,

@@ -95,7 +95,12 @@ def supervisor_node(state: AgentState):
         }
         agent_name = agent_map.get(pending["agent"])
         if agent_name:
-            return {"next": agent_name}
+            # Preserve context when routing back to agent with pending disambiguation
+            return {
+                "next": agent_name,
+                "last_mentioned_job_id": state.get("last_mentioned_job_id"),
+                "last_viewed_product": state.get("last_viewed_product")
+            }
 
     # Get user's message
     messages = state.get("messages", [])
@@ -199,7 +204,9 @@ def supervisor_node(state: AgentState):
             "routing_reason": routing_reason,
             "routing_context": handoff_context,
             "transition_history": transition_history,
-            "handoff_context": handoff_context
+            "handoff_context": handoff_context,
+            "last_mentioned_job_id": state.get("last_mentioned_job_id"),  # Preserve job context
+            "last_viewed_product": state.get("last_viewed_product")  # Preserve product context
         }
 
         # Handle based on confidence threshold
@@ -221,7 +228,9 @@ def supervisor_node(state: AgentState):
                     "- 'Show me the status of job COST-12345678'\n"
                     "- 'Add a hydraulic pump to my job'"
                 ))],
-                "transition_history": transition_history
+                "transition_history": transition_history,
+                "last_mentioned_job_id": state.get("last_mentioned_job_id"),  # Preserve job context
+                "last_viewed_product": state.get("last_viewed_product")  # Preserve product context
             }
         else:
             # High confidence - proceed normally with handoff message
@@ -233,7 +242,13 @@ def supervisor_node(state: AgentState):
         if result.get("greeting_response"):
             return {
                 "next": result["next"],
-                "messages": [AIMessage(content=result["greeting_response"])]
+                "messages": [AIMessage(content=result["greeting_response"])],
+                "last_mentioned_job_id": state.get("last_mentioned_job_id"),  # Preserve job context
+                "last_viewed_product": state.get("last_viewed_product")  # Preserve product context
             }
 
-        return {"next": result["next"]}
+        return {
+            "next": result["next"],
+            "last_mentioned_job_id": state.get("last_mentioned_job_id"),  # Preserve job context
+            "last_viewed_product": state.get("last_viewed_product")  # Preserve product context
+        }
