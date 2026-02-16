@@ -435,8 +435,26 @@ def status_node(state: AgentState):
     if not job_id and (wants_details or focus):
         job_id = state.get("last_mentioned_job_id") or ""
 
+    # Detect "first job", "second job", etc. references
+    job_index = None
+    if "first job" in msg_lower or "1st job" in msg_lower:
+        job_index = 0
+    elif "second job" in msg_lower or "2nd job" in msg_lower:
+        job_index = 1
+    elif "third job" in msg_lower or "3rd job" in msg_lower:
+        job_index = 2
+
     # Fetch job statuses
     job_statuses = tools.get_costing_job_statuses(user_id=user_id, job_id=job_id or None)
+
+    # If user referenced a job by index (e.g., "first job"), extract that job's ID
+    if job_index is not None and not job_id and job_statuses and len(job_statuses) > job_index:
+        job_id = job_statuses[job_index].get("job_id")
+        print(f"[StatusAgent] Detected job index {job_index}, extracted job_id: {job_id}")
+        print(f"[StatusAgent] Total jobs before re-fetch: {len(job_statuses)}")
+        # Re-fetch to get just this job's details
+        job_statuses = tools.get_costing_job_statuses(user_id=user_id, job_id=job_id)
+        print(f"[StatusAgent] After re-fetch, jobs count: {len(job_statuses)}, first job: {job_statuses[0].get('job_id') if job_statuses else 'None'}")
 
     # Handle no jobs found
     if not job_statuses:
@@ -466,7 +484,11 @@ def status_node(state: AgentState):
         # Fallback to structured response if LLM fails
         response = f"Here's your job status:\n\n{status_context}"
 
+    # Debug logging
+    final_job_id = job_id if job_id else state.get("last_mentioned_job_id")
+    print(f"[StatusAgent] Setting last_mentioned_job_id to: {final_job_id}")
+
     return {
         "messages": [AIMessage(content=response)],
-        "last_mentioned_job_id": job_id if job_id else state.get("last_mentioned_job_id"),
+        "last_mentioned_job_id": final_job_id,
     }

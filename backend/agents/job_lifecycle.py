@@ -8,6 +8,7 @@ import json
 import re
 from langchain_core.messages import AIMessage
 from core.state import AgentState
+from core import config
 from utils import tools
 from utils.llm import llm
 from utils.prompts import JOB_LIFECYCLE_AGENT_SYSTEM_PROMPT, JOB_LIFECYCLE_EXTRACTION_PROMPT
@@ -66,12 +67,13 @@ def job_lifecycle_node(state: AgentState):
                 "📥 **Download costing sheets** - Get download links\n"
                 "📋 **Duplicate jobs** - Create copies with modifications\n"
                 "❌ **Cancel jobs** - Mark jobs as cancelled\n"
-                "📧 **Email costing sheets** - Send to reviewers\n\n"
+                "📧 **Email costing sheets** - Send to reviewers or default supervisor\n\n"
                 "Examples:\n"
                 "- 'Approve job COST-00123'\n"
                 "- 'Download the costing sheet'\n"
                 "- 'Duplicate this job for Nomad 75'\n"
-                "- 'Send the costing sheet to manager@gulfcraft.com'"
+                "- 'Send the costing sheet to manager@gulfcraft.com'\n"
+                "- 'Send to supervisor email' (uses default notification email)"
             )]
         }
 
@@ -157,27 +159,36 @@ def job_lifecycle_node(state: AgentState):
         recipient_email = params.get("recipient_email")
         message = params.get("message", "")
 
+        # Use default notification email if no recipient specified
         if not recipient_email:
+            recipient_email = config.NOTIFICATION_EMAIL
+            if not recipient_email:
+                response_msg = (
+                    "To send the costing sheet via email, I need the recipient's email address.\n\n"
+                    "Example: 'Send the costing sheet to manager@gulfcraft.com'\n\n"
+                    "Note: No default notification email is configured in the system."
+                )
+                return {
+                    "messages": [AIMessage(content=response_msg)],
+                    "last_mentioned_job_id": job_id
+                }
+            print(f"[JobLifecycle] Using default notification email: {recipient_email}")
+
+        result = tools.send_costing_sheet_email(
+            job_id=job_id,
+            recipient_email=recipient_email,
+            message=message
+        )
+
+        if result.get("success"):
             response_msg = (
-                "To send the costing sheet via email, I need the recipient's email address.\n\n"
-                "Example: 'Send the costing sheet to manager@gulfcraft.com'"
+                f"✅ **Costing sheet sent successfully!**\n\n"
+                f"Job ID: {job_id}\n"
+                f"Sent to: {recipient_email}\n\n"
+                f"The recipient will receive the Excel costing sheet as an attachment."
             )
         else:
-            result = tools.send_costing_sheet_email(
-                job_id=job_id,
-                recipient_email=recipient_email,
-                message=message
-            )
-
-            if result.get("success"):
-                response_msg = (
-                    f"✅ **Costing sheet sent successfully!**\n\n"
-                    f"Job ID: {job_id}\n"
-                    f"Sent to: {recipient_email}\n\n"
-                    f"The recipient will receive the Excel costing sheet as an attachment."
-                )
-            else:
-                response_msg = f"❌ Failed to send email: {result.get('error', 'Unknown error')}"
+            response_msg = f"❌ Failed to send email: {result.get('error', 'Unknown error')}"
 
     else:
         response_msg = (

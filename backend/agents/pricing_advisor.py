@@ -120,12 +120,14 @@ def pricing_advisor_node(state: AgentState):
                         "last_search_query": search_query  # Store for refinement/pagination
                     },
                     "last_action": "product_search",
+                    "last_mentioned_job_id": state.get("last_mentioned_job_id")  # Preserve job context
                 }
             else:
                 return {
                     "messages": [AIMessage(content=f"No products found matching '**{search_query}**'. Try a different description or item code.")],
                     "pending_disambiguation": None,
-                    "last_action": "product_search"
+                    "last_action": "product_search",
+                    "last_mentioned_job_id": state.get("last_mentioned_job_id")  # Preserve job context
                 }
 
         # Handle case where user is selecting from search results OR refining search
@@ -168,11 +170,13 @@ def pricing_advisor_node(state: AgentState):
                         "last_search_query": refined_query if not is_show_more else prev_query
                     },
                     "last_action": "product_search",
+                    "last_mentioned_job_id": state.get("last_mentioned_job_id")  # Preserve job context
                 }
             else:
                 return {
                     "messages": [AIMessage(content=f"No products found matching your search. Please try again or select from the original list (1-{len(items)}).")],
                     "pending_disambiguation": pending,
+                    "last_mentioned_job_id": state.get("last_mentioned_job_id")  # Preserve job context
                 }
 
         # Handle numeric selection
@@ -185,6 +189,7 @@ def pricing_advisor_node(state: AgentState):
             return {
                 "messages": [AIMessage(content=f"Please select a valid number (1-{len(items)}) from the list above, or refine your search with additional criteria.")],
                 "pending_disambiguation": pending,
+                "last_mentioned_job_id": state.get("last_mentioned_job_id")  # Preserve job context
             }
 
         # Show pricing info for the selected product
@@ -224,7 +229,8 @@ def pricing_advisor_node(state: AgentState):
                 "item_code": item_code,
                 "item_name": item_name,
                 "unit_price": unit_cost
-            }
+            },
+            "last_mentioned_job_id": state.get("last_mentioned_job_id")  # Preserve job context
         }
 
     # Extract parameters

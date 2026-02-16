@@ -304,7 +304,7 @@ Capabilities:
 - Generate download links for costing sheets
 - Duplicate existing jobs with modifications
 - Cancel jobs
-- Email costing sheets to specified recipients
+- Email costing sheets to specified recipients (uses default supervisor email if not specified)
 
 When managing job lifecycle:
 - Confirm actions before executing (especially for approve/cancel)
