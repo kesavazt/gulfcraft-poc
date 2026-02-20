@@ -197,6 +197,9 @@ def pricing_advisor_node(state: AgentState):
         item_name = selected_item.get("item_name", "")
         unit_cost = selected_item.get("unit_cost")
 
+        # Check if there was an original price comparison intent
+        original_comparison_price = pending.get("original_comparison_price")
+
         # Get current price from Products table
         current_product = tools.get_current_product_price(item_code) if item_code else {"found": False}
         current_price = _format_cost(current_product.get("unit_cost")) if current_product.get("found") else _format_cost(unit_cost)
@@ -221,10 +224,50 @@ def pricing_advisor_node(state: AgentState):
         elif not history:
             response_msg += "No historical pricing data found for this item.\n"
 
+        # If there was an original price comparison, perform the comparison now
+        if original_comparison_price and avg_data and not avg_data.get("error"):
+            avg_price = avg_data.get('average_price', 0)
+            min_price = avg_data.get('min_price', 0)
+            max_price = avg_data.get('max_price', 0)
+
+            # Calculate percentage difference
+            if avg_price > 0:
+                diff_pct = ((original_comparison_price - avg_price) / avg_price) * 100
+            else:
+                diff_pct = 0
+
+            # Determine assessment
+            if diff_pct > 20:
+                assessment = "⚠️ **Above Average** - This price is significantly higher than historical average"
+                recommendation = "💡 Consider negotiating for a better price!"
+            elif diff_pct < -20:
+                assessment = "✅ **Great Deal** - This price is significantly lower than historical average"
+                recommendation = "💡 Excellent price - consider proceeding!"
+            elif abs(diff_pct) <= 10:
+                assessment = "✅ **Fair Price** - This price is in line with historical average"
+                recommendation = "💡 Reasonable price based on historical data."
+            else:
+                # Between 10-20% variance
+                if diff_pct > 0:
+                    assessment = "ℹ️ **Slightly Above Average** - Moderately higher than typical pricing"
+                    recommendation = "💡 Acceptable, but you may be able to negotiate down slightly."
+                else:
+                    assessment = "✅ **Good Price** - Moderately below typical pricing"
+                    recommendation = "💡 Good deal - this is below our historical average!"
+
+            response_msg += (
+                f"\n\n🔍 **Price Comparison Analysis**\n\n"
+                f"**Your Quote:** {original_comparison_price:,.2f} AED\n"
+                f"**Historical Average:** {avg_price:,.2f} AED\n"
+                f"**Difference:** {diff_pct:+.1f}%\n\n"
+                f"{assessment}\n\n"
+                f"{recommendation}"
+            )
+
         return {
             "messages": [AIMessage(content=response_msg)],
             "pending_disambiguation": None,
-            "last_action": "product_search",
+            "last_action": "price_comparison" if original_comparison_price else "product_search",
             "last_viewed_product": {
                 "item_code": item_code,
                 "item_name": item_name,
@@ -258,6 +301,32 @@ def pricing_advisor_node(state: AgentState):
     item_name = params.get("item_name")
     search_query = params.get("search_query")
 
+    # Context awareness: Check if user is referring to the last viewed product
+    # Keywords like "this", "that", "the same", "it" indicate contextual reference
+    import re
+    user_message_lower = user_message.lower()
+
+    # Use regex to match contextual references with word boundaries
+    contextual_patterns = [
+        r'\bthis\b',       # "this" as a whole word
+        r'\bthat\b',       # "that" as a whole word
+        r'\bit\b',         # "it" as a whole word
+        r'the same',       # "the same"
+        r'same (product|item|one)',  # "same product", "same item", "same one"
+    ]
+    is_contextual_reference = any(re.search(pattern, user_message_lower) for pattern in contextual_patterns)
+
+    last_viewed = state.get("last_viewed_product")
+
+    # If user is asking about "this" product and we have a last viewed product, use it
+    if is_contextual_reference and last_viewed and not item_code:
+        item_code = last_viewed.get("item_code")
+        item_name = last_viewed.get("item_name")
+        # Override the extracted item_name/search_query with the last viewed product
+        if item_code:
+            params["item_code"] = item_code
+            params["item_name"] = item_name
+
     response_msg = ""
 
     if query_type == "product_search":
@@ -277,14 +346,21 @@ def pricing_advisor_node(state: AgentState):
 
             if search_result.get("found"):
                 results = search_result["results"]
-                response_msg = f"🔎 Found **{len(results)} products** matching '**{query_text}**'. Please select one to see detailed pricing."
+                # Check if there's a comparison price in the params (query might be "Is 1500 AED good for X?")
+                comparison_price = _sanitize_price(params.get("current_price"))
+
+                if comparison_price:
+                    response_msg = f"🔎 Found **{len(results)} products** matching '**{query_text}**'. Please select one to compare your price of **{comparison_price:,.2f} AED**."
+                else:
+                    response_msg = f"🔎 Found **{len(results)} products** matching '**{query_text}**'. Please select one to see detailed pricing."
 
                 return {
                     "messages": [AIMessage(content=response_msg)],
                     "pending_disambiguation": {
                         "agent": "pricing_advisor",
                         "items": results[:10],
-                        "last_search_query": query_text  # Store for refinement/pagination
+                        "last_search_query": query_text,  # Store for refinement/pagination
+                        "original_comparison_price": comparison_price  # Preserve for after selection
                     },
                     "last_action": "product_search",
                 }
@@ -404,13 +480,16 @@ def pricing_advisor_node(state: AgentState):
                 if len(products) == 1:
                     item_code = products[0].get("item_code")
                 else:
+                    # Store the original comparison price for later use
+                    comparison_price = _sanitize_price(params.get("current_price"))
                     response_msg = f"🔎 Found **{len(products)} products** matching '**{item_name}**'. Please select one to compare pricing."
                     return {
                         "messages": [AIMessage(content=response_msg)],
                         "pending_disambiguation": {
                             "agent": "pricing_advisor",
                             "items": products[:10],
-                            "last_search_query": item_name
+                            "last_search_query": item_name,
+                            "original_comparison_price": comparison_price  # Preserve for after selection
                         },
                         "last_action": "price_comparison",
                     }
@@ -448,12 +527,21 @@ def pricing_advisor_node(state: AgentState):
                     # Determine assessment
                     if diff_pct > 20:
                         assessment = "⚠️ **Above Average** - This price is significantly higher than historical average"
+                        recommendation = "💡 Consider negotiating for a better price!"
                     elif diff_pct < -20:
                         assessment = "✅ **Great Deal** - This price is significantly lower than historical average"
+                        recommendation = "💡 Excellent price - consider proceeding!"
                     elif abs(diff_pct) <= 10:
                         assessment = "✅ **Fair Price** - This price is in line with historical average"
+                        recommendation = "💡 Reasonable price based on historical data."
                     else:
-                        assessment = "ℹ️ **Slightly Different** - Minor variance from historical average"
+                        # Between 10-20% variance
+                        if diff_pct > 0:
+                            assessment = "ℹ️ **Slightly Above Average** - Moderately higher than typical pricing"
+                            recommendation = "💡 Acceptable, but you may be able to negotiate down slightly."
+                        else:
+                            assessment = "✅ **Good Price** - Moderately below typical pricing"
+                            recommendation = "💡 Good deal - this is below our historical average!"
 
                     response_msg = (
                         f"🔍 **Price Comparison for {item_code}**\n\n"
@@ -463,7 +551,7 @@ def pricing_advisor_node(state: AgentState):
                         f"{assessment}\n\n"
                         f"**Historical Range:** {min_price:.2f} - {max_price:.2f} AED\n"
                         f"**Sample Size:** {avg_data.get('sample_count')} purchases\n\n"
-                        f"💡 Consider negotiating if the price is significantly above average!"
+                        f"{recommendation}"
                     )
 
     else:

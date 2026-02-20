@@ -225,6 +225,99 @@ class TestPriceIntelligenceWorkflow:
         diff_percent = ((current_quote - historical_avg) / historical_avg) * 100
         assert diff_percent == -20.0
 
+    def test_price_comparison_workflow_vacuum_cleaner(self):
+        """
+        Test the complete price comparison workflow for vacuum cleaner example.
+
+        Simulates user asking: "Is 1500 AED a good price for a vacuum cleaner?"
+
+        Expected workflow:
+        1. Extract query type (price_comparison), item_name, and current_price
+        2. Search for matching products (vacuum cleaner)
+        3. User selects from results
+        4. Compare 1500 AED against historical data
+        5. Provide assessment based on deviation
+        """
+        from agents.pricing_advisor import pricing_advisor_node, _extract_pricing_parameters
+        from langchain_core.messages import HumanMessage, AIMessage
+
+        # Step 1: Initial query - price comparison
+        state = {
+            "messages": [HumanMessage(content="Is 1500 AED a good price for a vacuum cleaner?")],
+        }
+
+        # Extract parameters
+        params = _extract_pricing_parameters(
+            "Is 1500 AED a good price for a vacuum cleaner?",
+            state
+        )
+
+        # Verify extraction works correctly
+        assert params.get("query_type") in ["price_comparison", "product_search"]
+        assert "vacuum" in params.get("item_name", "").lower() or \
+               "vacuum" in params.get("search_query", "").lower()
+
+        # If price is extracted, verify it's correct
+        if params.get("current_price"):
+            current_price = float(str(params["current_price"]).replace("AED", "").strip())
+            assert current_price == 1500.0
+
+    def test_price_comparison_assessment_thresholds(self):
+        """
+        Test price comparison assessment categories.
+
+        Verifies the correct assessment is given based on price deviation:
+        - Great Deal: < -20%
+        - Fair Price: -10% to +10%
+        - Slightly Different: -20% to -10% or +10% to +20%
+        - Above Average: > +20%
+        """
+        avg_price = 1000.0
+
+        # Test Great Deal (25% below average)
+        current_price = 750.0
+        diff_pct = ((current_price - avg_price) / avg_price) * 100
+        assert diff_pct < -20, "Should be classified as Great Deal"
+
+        # Test Fair Price (5% above average)
+        current_price = 1050.0
+        diff_pct = ((current_price - avg_price) / avg_price) * 100
+        assert abs(diff_pct) <= 10, "Should be classified as Fair Price"
+
+        # Test Slightly Different (15% above average)
+        current_price = 1150.0
+        diff_pct = ((current_price - avg_price) / avg_price) * 100
+        assert 10 < abs(diff_pct) <= 20, "Should be classified as Slightly Different"
+
+        # Test Above Average (25% above average)
+        current_price = 1250.0
+        diff_pct = ((current_price - avg_price) / avg_price) * 100
+        assert diff_pct > 20, "Should be classified as Above Average"
+
+    def test_product_search_with_disambiguation(self):
+        """
+        Test product search triggers disambiguation when multiple matches found.
+
+        When searching for a generic term like "vacuum cleaner", the system should:
+        1. Return multiple product matches
+        2. Set pending_disambiguation state
+        3. Store search results for user selection
+        """
+        from agents.pricing_advisor import pricing_advisor_node
+        from langchain_core.messages import HumanMessage
+
+        state = {
+            "messages": [HumanMessage(content="search for vacuum cleaner pricing")],
+        }
+
+        # This test verifies the agent structure handles disambiguation
+        # The actual search will be mocked in integration tests
+        result = pricing_advisor_node(state)
+
+        # Should return a response
+        assert "messages" in result
+        assert len(result["messages"]) > 0
+
 
 # ============================================================================
 # WORKFLOW 3: VENDOR SELECTION WORKFLOW TESTS

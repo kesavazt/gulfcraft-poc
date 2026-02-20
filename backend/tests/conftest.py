@@ -356,6 +356,104 @@ def sample_price_history():
     ]
 
 
+@pytest.fixture
+def sample_vacuum_cleaner_products():
+    """
+    Sample vacuum cleaner product data for testing price comparison.
+
+    Returns a list of vacuum cleaner products with varying specifications.
+    """
+    return [
+        {
+            "item_code": "VAC-001",
+            "item_name": "Industrial Vacuum Cleaner 1200W",
+            "description": "Heavy-duty industrial vacuum cleaner with 1200W motor",
+            "unit_cost": 1250.0,
+            "category": "Cleaning Equipment"
+        },
+        {
+            "item_code": "VAC-002",
+            "item_name": "Wet/Dry Vacuum Cleaner 1500W",
+            "description": "Wet and dry vacuum cleaner with 1500W motor and 30L tank",
+            "unit_cost": 1450.0,
+            "category": "Cleaning Equipment"
+        },
+        {
+            "item_code": "VAC-003",
+            "item_name": "Commercial Vacuum Cleaner 2000W",
+            "description": "Commercial grade vacuum cleaner 2000W with HEPA filter",
+            "unit_cost": 1800.0,
+            "category": "Cleaning Equipment"
+        },
+        {
+            "item_code": "VAC-004",
+            "item_name": "Compact Vacuum Cleaner 800W",
+            "description": "Compact vacuum cleaner for small spaces, 800W motor",
+            "unit_cost": 850.0,
+            "category": "Cleaning Equipment"
+        }
+    ]
+
+
+@pytest.fixture
+def sample_vacuum_price_history():
+    """
+    Sample price history for vacuum cleaner (VAC-002) for testing comparisons.
+
+    Returns historical purchase data showing price trends over time.
+    """
+    return [
+        {
+            "item_code": "VAC-002",
+            "item_name": "Wet/Dry Vacuum Cleaner 1500W",
+            "unit_price": 1400.0,
+            "quantity": 2,
+            "job_id": "COST-001",
+            "vendor_email": "cleaning@supplier1.com",
+            "date": "2024-01-15"
+        },
+        {
+            "item_code": "VAC-002",
+            "item_name": "Wet/Dry Vacuum Cleaner 1500W",
+            "unit_price": 1420.0,
+            "quantity": 1,
+            "job_id": "COST-045",
+            "vendor_email": "cleaning@supplier2.com",
+            "date": "2024-02-20"
+        },
+        {
+            "item_code": "VAC-002",
+            "item_name": "Wet/Dry Vacuum Cleaner 1500W",
+            "unit_price": 1380.0,
+            "quantity": 3,
+            "job_id": "COST-089",
+            "vendor_email": "cleaning@supplier1.com",
+            "date": "2024-03-10"
+        },
+        {
+            "item_code": "VAC-002",
+            "item_name": "Wet/Dry Vacuum Cleaner 1500W",
+            "unit_price": 1450.0,
+            "quantity": 1,
+            "job_id": "COST-112",
+            "vendor_email": "cleaning@supplier3.com",
+            "date": "2024-04-05"
+        }
+    ]
+
+
+@pytest.fixture
+def pricing_advisor_agent_state(sample_agent_state):
+    """Agent state for testing pricing advisor agent."""
+    from langchain_core.messages import HumanMessage
+
+    state = sample_agent_state.copy()
+    state["messages"] = [
+        HumanMessage(content="Is 1500 AED a good price for a vacuum cleaner?")
+    ]
+    return state
+
+
 # ============================================================================
 # API TESTING FIXTURES
 # ============================================================================
