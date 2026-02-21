@@ -92,6 +92,7 @@ def supervisor_node(state: AgentState):
             "edit_job": "EditJobAgent",
             "quote_management": "QuoteManagementAgent",
             "pricing_advisor": "PricingAdvisorAgent",
+            "status": "StatusAgent",
         }
         agent_name = agent_map.get(pending["agent"])
         if agent_name:

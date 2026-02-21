@@ -531,9 +531,31 @@ def edit_job_node(state: AgentState):
                     "pending_disambiguation": None
                 }
             else:
+                # The user didn't give us a valid job ID — show the list so they
+                # can pick without having to know the ID off the top of their head.
+                recent_jobs = tools.list_recent_jobs(limit=15)
+                if not recent_jobs:
+                    return {
+                        "messages": [AIMessage(content="No jobs found in the system.")],
+                        "pending_disambiguation": None,
+                    }
+                job_list = "\n".join([
+                    f"  {i+1}. **{job['job_id']}** - {job['description']}\n"
+                    f"     Status: {job['status']} | Items: {job['line_items_count']} | Created: {job['created_at']}"
+                    for i, job in enumerate(recent_jobs)
+                ])
                 return {
-                    "messages": [AIMessage(content="Please provide a valid job ID in the format COST-XXXXXXXX.")],
-                    "pending_disambiguation": pending
+                    "messages": [AIMessage(content=
+                        f"📋 **Recent Jobs:**\n\n{job_list}\n\n"
+                        f"Which job would you like to edit? Reply with the number (1-{len(recent_jobs)}) or job ID."
+                    )],
+                    "pending_disambiguation": {
+                        "agent": "edit_job",
+                        "disambiguation_type": "job_list_selection",
+                        "jobs": recent_jobs,
+                        "intended_operation": pending.get("intended_operation"),
+                        "params": pending.get("params", {}),
+                    },
                 }
 
         # Handle add item name input
@@ -735,6 +757,40 @@ def edit_job_node(state: AgentState):
                 }
 
             job_id = selected_job["job_id"]
+
+            # If we already know the intended operation, skip the action menu
+            intended_operation = pending.get("intended_operation")
+            if intended_operation == "add_item":
+                last_viewed = state.get("last_viewed_product")
+                if last_viewed:
+                    item_name = last_viewed.get("item_name")
+                    return {
+                        "messages": [AIMessage(content=
+                            f"Working with job **{job_id}**.\n\n"
+                            f"How many units of **{item_name}** do you want to add? (e.g., '1', '5', '10')"
+                        )],
+                        "last_mentioned_job_id": job_id,
+                        "pending_disambiguation": {
+                            "agent": "edit_job",
+                            "disambiguation_type": "add_viewed_product_quantity",
+                            "product": last_viewed,
+                            "job_id": job_id,
+                        },
+                    }
+                else:
+                    return {
+                        "messages": [AIMessage(content=
+                            f"Working with job **{job_id}**.\n\nWhat item would you like to add? "
+                            f"You can provide an item name, description, or item code."
+                        )],
+                        "last_mentioned_job_id": job_id,
+                        "pending_disambiguation": {
+                            "agent": "edit_job",
+                            "disambiguation_type": "add_item_name_needed",
+                            "job_id": job_id,
+                        },
+                    }
+
             return {
                 "messages": [AIMessage(content=
                     f"Great! Working with job **{job_id}**.\n\n"

@@ -420,6 +420,36 @@ def status_node(state: AgentState):
     """
     user_id = state.get("user_id", 1)
     user_message = state["messages"][-1].content if state.get("messages") else ""
+
+    # Handle job selection when user picks from a previously shown list
+    pending = state.get("pending_disambiguation")
+    if pending and pending.get("agent") == "status":
+        jobs = pending.get("jobs", [])
+        selection = user_message.strip()
+        selected_job = None
+
+        if selection.isdigit():
+            idx = int(selection) - 1
+            if 0 <= idx < len(jobs):
+                selected_job = jobs[idx]
+        else:
+            for job in jobs:
+                if job.get("job_id", "").upper() == selection.upper():
+                    selected_job = job
+                    break
+
+        if selected_job:
+            job_id = selected_job.get("job_id")
+            return {
+                "messages": [AIMessage(content=
+                    f"Got it — **{job_id}** is now in context. "
+                    f"You can ask me about it or say 'add to this job' to edit it."
+                )],
+                "last_mentioned_job_id": job_id,
+                "pending_disambiguation": None,
+            }
+        # Selection not recognised — fall through and re-show status normally
+
     job_id = _extract_job_id(user_message)
     msg_lower = (user_message or "").lower()
     wants_details = any(k in msg_lower for k in [
@@ -488,7 +518,23 @@ def status_node(state: AgentState):
     final_job_id = job_id if job_id else state.get("last_mentioned_job_id")
     print(f"[StatusAgent] Setting last_mentioned_job_id to: {final_job_id}")
 
+    # When showing a list of multiple jobs (no specific job requested), let the
+    # user select one by number on the next turn instead of forcing them to type
+    # a full job ID.
+    selection_pending = None
+    if not job_id and len(job_statuses) > 1:
+        job_summaries = [
+            {
+                "job_id": j.get("job_id"),
+                "description": _truncate(j.get("item_details") or "", 60),
+                "status": j.get("status"),
+            }
+            for j in job_statuses
+        ]
+        selection_pending = {"agent": "status", "jobs": job_summaries}
+
     return {
         "messages": [AIMessage(content=response)],
         "last_mentioned_job_id": final_job_id,
+        "pending_disambiguation": selection_pending,
     }
